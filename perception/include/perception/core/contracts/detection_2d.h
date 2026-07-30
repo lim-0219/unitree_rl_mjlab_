@@ -159,8 +159,23 @@ struct CircleObservation {
   // occlusion logic keys off the sensor-referenced one.
   double arc_length_m = 0.0;
 
-  // Same definition as FittedPrimitive2D::fit_residual_m: RMS of
-  // | ||p - center|| - radius_fitted_m | over the point_count contributing points.
+  // RMS of | ||p - center|| - r | over the point_count contributing points, where r is the
+  // fitted radius WITHOUT `detection.radius_enlargement_m` - i.e. the bare circumcircle the
+  // points are actually near, not `radius_fitted_m`, which is that circle plus a safety pad.
+  //
+  // CORRECTED (this comment previously named radius_fitted_m, and the code matched it). Measured
+  // against the padded radius, every residual carried the pad as an additive constant: on this
+  // repository's corpus the mean was 0.3076 m against a 0.2500 m enlargement, so 81% of the
+  // reported "fit noise" was a configuration value and the smallest residual any circle could
+  // report was the enlargement itself. Since fit_residual_m's sole consumer is the
+  // measurement-sigma formula, that propagated into sigma_center_m/sigma_radius_m, into the
+  // tracker's R, and into the safety stage's k_sigma terms - 66% of P10's total inflation.
+  //
+  // The short-arc CENTRE offset (P8 finding 1) is still inside this number and should be: the
+  // centre is fixed by the circumcircle construction, so a biased centre puts the points off
+  // the fitted circle and the residual sees it. What the residual cannot see is bias in the
+  // centre that moves the points radially in unison; see TrackingParams::measurement_sigma_scale
+  // for where that is accounted for.
   double fit_residual_m = 0.0;
 
   // Range from the scan origin to `center`, in the frame the observation was MADE in

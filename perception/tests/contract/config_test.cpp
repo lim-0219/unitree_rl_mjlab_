@@ -328,6 +328,17 @@ void TestCrossFieldConstraints() {
                "radius_enlargement_m must be < detection.max_circle_radius_m",
                "an enlargement at or above the circle cap is rejected");
 
+  // THE SHORT-ARC BIAS BUDGET, added at P10. Only `detection.radius_enlargement_m` and
+  // `safety.radius_inflation_fixed_m` cover a SYSTEMATIC radius under-estimate; the stochastic
+  // `k_sigma * sigma_r` term provably does not (P10 measured containment falling to 93.9% on a
+  // corpus with the enlargement absent). Zeroing the enlargement is a detection-side edit whose
+  // only consequence is at the far end of the pipeline, so it is rejected rather than trusted.
+  CheckRejects("short_arc_budget.yaml",
+               ShippedWith("    radius_enlargement_m: 0.25", "    radius_enlargement_m: 0.0"),
+               "must be >= 0.20 m, the measured worst-case short-arc radius under-estimate",
+               "zeroing the detector enlargement without raising the safety fixed term is "
+               "rejected");
+
   // Safety cannot gate on fewer hits than the tracker needs to confirm.
   CheckRejects("safety_before_confirm.yaml",
                ShippedWith("    min_track_hits: 3", "    min_track_hits: 1"),

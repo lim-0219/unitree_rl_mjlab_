@@ -163,6 +163,10 @@ std::string ResolvedConfigText(const PerceptionConfig& config) {
   out.Add("tracking.process_rate_variance", config.tracking.process_rate_variance);
   out.Add("tracking.measurement_variance", config.tracking.measurement_variance);
   out.Add("tracking.min_correspondence_cost_m", config.tracking.min_correspondence_cost_m);
+  out.Add("tracking.association_radius_weight", config.tracking.association_radius_weight);
+  out.Add("tracking.measurement_sigma_scale", config.tracking.measurement_sigma_scale);
+  out.Add("tracking.measurement_sigma_floor_m", config.tracking.measurement_sigma_floor_m);
+  out.Add("tracking.initial_rate_variance", config.tracking.initial_rate_variance);
   out.Add("tracking.confirm_hits", config.tracking.confirm_hits);
   out.Add("tracking.delete_misses", config.tracking.delete_misses);
   out.Add("tracking.max_coast_s", config.tracking.max_coast_s);

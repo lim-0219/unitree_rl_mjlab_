@@ -89,6 +89,11 @@ target_include_directories(perception_dpcbf_headers
 # ---------------------------------------------------------------------------------------
 add_library(perception_core STATIC
   src/core/geometry/rpy.cpp
+  src/core/projection/scan_projector.cpp
+  src/core/detection/line_fit.cpp
+  src/core/detection/segment_circle_detector.cpp
+  src/core/tracking/kf_circle_tracker.cpp
+  src/core/safety/safety_state_generator.cpp
 )
 target_link_libraries(perception_core PUBLIC perception_contracts)
 target_compile_features(perception_core PUBLIC cxx_std_17)
@@ -180,11 +185,63 @@ target_compile_features(perception_config PUBLIC cxx_std_17)
 # ---------------------------------------------------------------------------------------
 add_library(perception_dpcbf_adapter STATIC
   src/adapters/dpcbf/oracle_to_dpcbf.cpp
+  src/adapters/dpcbf/safety_to_dpcbf.cpp
 )
 target_link_libraries(perception_dpcbf_adapter
   PUBLIC perception_contracts perception_dpcbf_headers
 )
 target_compile_features(perception_dpcbf_adapter PUBLIC cxx_std_17)
+
+# ---------------------------------------------------------------------------------------
+# perception_dpcbf_probe - the duplicate side-effect-free DpcbfSafetyFilter comparison
+# (architecture doc section 16, ladder steps 4-5; P11).
+#
+# SAME MODULE, SEPARATE TARGET, AND BOTH HALVES OF THAT ARE DELIBERATE.
+#
+#   Same module: this is the only code in the subsystem that instantiates DpcbfSafetyFilter
+#   itself rather than merely naming dpcbf::ObstacleState, and the dependency rules put every
+#   dpcbf header inside adapters/dpcbf. Its source therefore lives in src/adapters/dpcbf/
+#   alongside the two conversions, and integration/Evaluator calls it through a header that
+#   names no dpcbf type at all (paired_filter_probe.h) rather than holding a filter itself.
+#
+#   Separate target: linking the real dpcbf_safety_filter drags in OSQP and abseil.
+#   perception_dpcbf_adapter is on the LIVE path - perception_integration links it, and so
+#   therefore does unitree_mujoco - and it must keep building standalone on a machine with no
+#   simulator and no dpcbf build. An evaluation-only facility must not add a solver to the
+#   live path's link set to buy itself a measurement. Hence the guard: this target exists only
+#   where the dpcbf library is actually being built.
+# ---------------------------------------------------------------------------------------
+if(TARGET dpcbf_safety_filter)
+  add_library(perception_dpcbf_probe STATIC
+    src/adapters/dpcbf/paired_filter_probe.cpp
+  )
+  target_link_libraries(perception_dpcbf_probe
+    PUBLIC perception_dpcbf_adapter
+    PRIVATE dpcbf_safety_filter
+  )
+  target_compile_features(perception_dpcbf_probe PUBLIC cxx_std_17)
+else()
+  message(STATUS "perception: dpcbf_safety_filter target absent"
+                 " - the paired-filter probe and its evaluator test are skipped")
+endif()
+
+# ---------------------------------------------------------------------------------------
+# perception_evaluator - oracle-vs-estimate association, error stats, JSON manifests.
+#
+# THE LINK SET IS THE ENFORCEMENT OF "evaluator -> feeding estimator" (doc section 8). It
+# links perception_contracts and perception_diagnostics, and deliberately NOT perception_core:
+# SegmentCircleDetector, KfCircleTracker and SafetyStateGenerator are not linkable from here,
+# so there is no estimator object in reach for this module to feed. Same principle that keeps
+# core off yaml-cpp and MuJoCo. It also does not link perception_dpcbf_probe - it only reads
+# the probe's plain-POD outcome type - so it stays buildable with no dpcbf library present.
+# ---------------------------------------------------------------------------------------
+add_library(perception_evaluator STATIC
+  src/integration/evaluator.cpp
+)
+target_link_libraries(perception_evaluator
+  PUBLIC perception_contracts perception_diagnostics
+)
+target_compile_features(perception_evaluator PUBLIC cxx_std_17)
 
 # ---------------------------------------------------------------------------------------
 # MuJoCo. Supplied by the vendored tree under simulate/mujoco. When it is absent, the
@@ -295,12 +352,6 @@ if(PERCEPTION_WITH_TRAVEL)
     " implemented yet (its phase is later than the current Mid-360 bring-up slice)")
 endif()
 
-if(PERCEPTION_BUILD_UPSTREAM_ORACLE)
-  message(FATAL_ERROR
-    "perception: PERCEPTION_BUILD_UPSTREAM_ORACLE=ON but the upstream obstacle_detector"
-    " regression oracle target arrives with the detection phase")
-endif()
-
 # ---------------------------------------------------------------------------------------
 # Tests. Plain executables registered with CTest, matching dpcbf_safety_filter_test.
 # ---------------------------------------------------------------------------------------
@@ -347,6 +398,212 @@ if(PERCEPTION_BUILD_TESTS)
     COMMAND perception_dump_roundtrip_test
             "${CMAKE_CURRENT_BINARY_DIR}/test_scratch/dump_roundtrip"
   )
+
+  # The P7 golden-fixture capture tool. Not a test - it produces
+  # tests/fixtures/projection_golden/, which perception_projection_test checks against and
+  # which P8's detector port consumes as its input corpus.
+  #
+  # Deliberately produces its scans through the VERBATIM UPSTREAM REFERENCE rather than
+  # through ScanProjector: a golden captured from the implementation under test proves only
+  # that the implementation is stable. See tests/regression/p2l_reference.h.
+  #
+  # Outside the MuJoCo block, unlike P3's oracle capture: this corpus is synthetic by
+  # design (P6's segmenter does not exist yet), so nothing here needs a simulator.
+  add_executable(perception_projection_golden_capture
+                 tests/regression/projection_golden_capture.cc)
+  target_link_libraries(perception_projection_golden_capture
+    PRIVATE perception_core perception_diagnostics
+  )
+  target_include_directories(perception_projection_golden_capture
+    PRIVATE tests/regression tests/fixtures
+  )
+
+  # P7 acceptance: bin correctness exact, p2l equivalence exact, information-loss stats.
+  #
+  # Links perception_config as well as perception_core so the test can assert that the
+  # SHIPPED configs/perception.yaml actually reaches the projector through
+  # integration/projection_params.h. That link is on the TEST, not on perception_core -
+  # perception_core still links perception_contracts alone, which is what keeps the
+  # core-dependency rule enforced by link set rather than by intention.
+  # argv[1] is perception/, for the shipped config and the committed fixtures.
+  add_executable(perception_projection_test tests/unit/projection_test.cpp)
+  target_link_libraries(perception_projection_test
+    PRIVATE perception_core perception_config perception_diagnostics
+  )
+  target_include_directories(perception_projection_test
+    PRIVATE tests/contract tests/regression tests/fixtures
+  )
+  add_test(
+    NAME perception_projection_test
+    COMMAND perception_projection_test "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+
+  # P8 acceptance: the ported detection core sub-stage by sub-stage, plus the short-arc
+  # circle-fitting experiment. Needs no MuJoCo and no Armadillo - the upstream-parity half of
+  # P8 is the separate oracle target below, deliberately, so that the claims which do NOT
+  # reduce to "same as upstream" are provable on any machine.
+  # argv[1] is perception/, for the shipped config.
+  add_executable(perception_detection_test tests/unit/detection_test.cpp)
+  target_link_libraries(perception_detection_test PRIVATE perception_core perception_config)
+  target_include_directories(perception_detection_test
+    PRIVATE tests/contract tests/fixtures
+  )
+  add_test(
+    NAME perception_detection_test
+    COMMAND perception_detection_test "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+
+  # P9 acceptance: the ported tracking core, the lifecycle, the two P8 findings this phase had to
+  # design around, and the section-12 tracking gates. The upstream-parity half is the separate
+  # oracle target below.
+  #
+  # Links perception_config for the same reason perception_detection_test does - the test asserts
+  # that the SHIPPED configs/perception.yaml actually reaches the tracker through
+  # integration/tracking_params.h. It also includes tests/fixtures/detection_scenes.h and runs the
+  # REAL detector, because the +/-pi seam scenario's subject is a detector behaviour and a
+  # synthesised version of it would assume the answer.
+  # argv[1] is perception/, for the shipped config.
+  add_executable(perception_tracking_test tests/unit/tracking_test.cpp)
+  target_link_libraries(perception_tracking_test PRIVATE perception_core perception_config)
+  target_include_directories(perception_tracking_test
+    PRIVATE tests/contract tests/fixtures
+  )
+  add_test(
+    NAME perception_tracking_test
+    COMMAND perception_tracking_test "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+
+  # P10 acceptance: validity gating, conservative inflation, the velocity spike clamp, and the
+  # section-12 safety gates (containment, radius under-estimation, uncertainty coverage, the
+  # analytic latency check).
+  #
+  # Links perception_config for the same reason the detection and tracking tests do - it asserts
+  # that the SHIPPED configs/perception.yaml actually reaches the stage through
+  # integration/safety_params.h. It runs the REAL detector and the REAL tracker over ray-cast
+  # scenes as well as over P9's synthetic streams, because a containment claim about the shipped
+  # pipeline cannot be made from a fixture that skips two of its three stages.
+  # argv[1] is perception/, for the shipped config.
+  add_executable(perception_safety_test tests/unit/safety_test.cpp)
+  target_link_libraries(perception_safety_test PRIVATE perception_core perception_config)
+  target_include_directories(perception_safety_test
+    PRIVATE tests/contract tests/fixtures
+  )
+  add_test(
+    NAME perception_safety_test
+    COMMAND perception_safety_test "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+
+  # P11 acceptance, part 1: the SafetyObstacle -> dpcbf::ObstacleState conversion, the id
+  # policy through the tracker's fusion and fission passes, and the measured (not inherited)
+  # impact of max_obstacles/drop_invalid on the ESTIMATED path.
+  #
+  # Needs no dpcbf LIBRARY and no MuJoCo - only the ObstacleState struct from the headers - so
+  # the adapter's correctness is provable on a machine that cannot run the simulator, which is
+  # the same property perception_dpcbf_adapter itself has.
+  # argv[1] is perception/, for the shipped config.
+  add_executable(perception_dpcbf_adapter_test tests/adapter/dpcbf_adapter_test.cpp)
+  target_link_libraries(perception_dpcbf_adapter_test
+    PRIVATE perception_dpcbf_adapter perception_core perception_config
+  )
+  target_include_directories(perception_dpcbf_adapter_test
+    PRIVATE tests/contract tests/fixtures
+  )
+  add_test(
+    NAME perception_dpcbf_adapter_test
+    COMMAND perception_dpcbf_adapter_test "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+
+  # P11 acceptance, part 2: the evaluator's association and the duplicate side-effect-free
+  # DPCBF comparison. Needs the real dpcbf library for its two filter instances, so it is
+  # guarded on the probe target the same way the MuJoCo tests are guarded on MuJoCo.
+  # argv[1] is perception/, argv[2] the repository root (for dpcbf/config/dpcbf_config.yaml).
+  if(TARGET perception_dpcbf_probe)
+    add_executable(perception_paired_evaluator_test tests/integration/evaluator_test.cpp)
+    target_link_libraries(perception_paired_evaluator_test
+      PRIVATE perception_evaluator perception_dpcbf_probe perception_core perception_config
+    )
+    target_include_directories(perception_paired_evaluator_test
+      PRIVATE tests/contract tests/fixtures
+    )
+    add_test(
+      NAME perception_paired_evaluator_test
+      COMMAND perception_paired_evaluator_test
+              "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    )
+  endif()
+
+  # ---------------------------------------------------------------------------------------
+  # The upstream regression oracle. TEST-ONLY, OFF by default, and never on any production path.
+  #
+  # Compiles obstacle_detector's ROS-free utility headers (point/point_set/segment/circle/
+  # figure_fitting) and links Armadillo, so the ported detector can be compared against the real
+  # `arma::pinv` algorithm on identical inputs - the "code used only in tests" row of the
+  # architecture doc's adoption table (section 4.2). The pipeline itself is transcribed in
+  # tests/regression/upstream_extractor_reference.h; nothing from obstacle_detector/src is compiled,
+  # because that half is ROS1.
+  #
+  # The option is OFF by default because it adds an Armadillo dependency that the rest of the
+  # repository does not have. Turn it on to run the parity suite:
+  #   cmake -DPERCEPTION_BUILD_UPSTREAM_ORACLE=ON <build-dir>
+  # ---------------------------------------------------------------------------------------
+  if(PERCEPTION_BUILD_UPSTREAM_ORACLE)
+    set(PERCEPTION_OBSTACLE_DETECTOR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../obstacle_detector"
+        CACHE PATH "Root of the reference obstacle_detector package, for the test-only oracle")
+    if(NOT EXISTS
+       "${PERCEPTION_OBSTACLE_DETECTOR_ROOT}/include/obstacle_detector/utilities/figure_fitting.h")
+      message(FATAL_ERROR
+        "perception: PERCEPTION_BUILD_UPSTREAM_ORACLE=ON but the reference obstacle_detector package"
+        " was not found under ${PERCEPTION_OBSTACLE_DETECTOR_ROOT}. Point"
+        " PERCEPTION_OBSTACLE_DETECTOR_ROOT at it, or leave the option OFF.")
+    endif()
+
+    find_package(Armadillo QUIET)
+    if(Armadillo_FOUND OR ARMADILLO_FOUND)
+      set(PERCEPTION_ARMADILLO_LIBS ${ARMADILLO_LIBRARIES})
+      set(PERCEPTION_ARMADILLO_INCLUDES ${ARMADILLO_INCLUDE_DIRS})
+    else()
+      # Armadillo's header-only fallback plus the bare library name, matching how this repository
+      # consumes yaml-cpp when no CMake package is present.
+      set(PERCEPTION_ARMADILLO_LIBS armadillo)
+      set(PERCEPTION_ARMADILLO_INCLUDES "")
+      message(STATUS "perception: no Armadillo CMake package; linking the bare name")
+    endif()
+
+    if(PERCEPTION_BUILD_TESTS)
+      add_executable(perception_detection_oracle_test tests/regression/detection_oracle_test.cpp)
+      target_link_libraries(perception_detection_oracle_test
+        PRIVATE perception_core perception_diagnostics ${PERCEPTION_ARMADILLO_LIBS}
+      )
+      target_include_directories(perception_detection_oracle_test PRIVATE
+        tests/contract tests/fixtures tests/regression
+        "${PERCEPTION_OBSTACLE_DETECTOR_ROOT}/include"
+        ${PERCEPTION_ARMADILLO_INCLUDES}
+      )
+      add_test(
+        NAME perception_detection_oracle_test
+        COMMAND perception_detection_oracle_test "${CMAKE_CURRENT_SOURCE_DIR}"
+      )
+
+      # P9 upstream parity. Unlike the detection oracle, this one compiles upstream's KALMAN FILTER
+      # ITSELF (utilities/kalman.h, which the audit established is ROS-free) and links Armadillo, so
+      # the 1e-12 comparison runs against the real arma::mat arithmetic. Only TrackedObstacle and
+      # the cost function are transcribed, because those two reach ROS message and tf headers - see
+      # tests/regression/upstream_tracker_reference.h for the split.
+      #
+      # Needs no argv: the sequences are generated in the test, not loaded from a fixture, because
+      # this comparison is about arithmetic rather than about scan geometry.
+      add_executable(perception_tracking_oracle_test tests/regression/tracking_oracle_test.cpp)
+      target_link_libraries(perception_tracking_oracle_test
+        PRIVATE perception_core ${PERCEPTION_ARMADILLO_LIBS}
+      )
+      target_include_directories(perception_tracking_oracle_test PRIVATE
+        tests/contract tests/regression
+        "${PERCEPTION_OBSTACLE_DETECTOR_ROOT}/include"
+        ${PERCEPTION_ARMADILLO_INCLUDES}
+      )
+      add_test(NAME perception_tracking_oracle_test COMMAND perception_tracking_oracle_test)
+    endif()
+  endif()
 
   if(PERCEPTION_HAVE_MUJOCO)
     # The PRE-CHANGE golden-fixture capture tool. Not a test - it produces

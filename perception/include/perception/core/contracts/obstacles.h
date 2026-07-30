@@ -34,15 +34,31 @@ inline const char* ToString(ObstacleSource source) {
   return "unknown";
 }
 
-// The per-frame view of a CONFIRMED track. Mirrors upstream CircleObstacle's
-// {radius, true_radius} distinction: `radius_true_m` here is upstream's `true_radius`,
-// the uninflated estimate. Inflation happens later, in SafetyObstacle.
+// The per-frame view of a CONFIRMED track.
+//
+// CORRECTION, P10 (this comment previously said the opposite, and the safety stage is where
+// believing it would have done damage). `radius_true_m` is NOT upstream's `true_radius`. It is
+// `TrackState2D::radius_m`, which is the Kalman filter driven by
+// `CircleObservation::radius_fitted_m`, and that observation is
+// `0.5773502 * chord + detection.radius_enlargement_m` (segment_circle_detector.cpp). The
+// enlargement - 0.25 m as shipped - is INSIDE this number. In upstream's own vocabulary this
+// field carries `CircleObstacle::radius`; `true_radius` is `radius - radius_enlargement` and no
+// stage computes it after detection.
+//
+// The size of the discrepancy, measured on the P8 corpus: this field over-states the real
+// obstacle radius by +0.089 m to +0.278 m. That over-statement is not a defect - it is the only
+// term in the pipeline covering P8's short-arc UNDER-estimate of up to 0.161 m, which is why
+// the safety stage is forbidden from subtracting it back off and why
+// PerceptionConfig::Validate() enforces a floor on the two terms that provide it.
+//
+// The name is kept rather than corrected because renaming a frozen contract field would touch
+// every consumer for no behavioural gain; what it means is written down here instead.
 struct PerceptionObstacle {
   uint32_t id = 0;  // The originating TrackState2D::id; stable across frames.
 
   Eigen::Vector2d center{0.0, 0.0};
   Eigen::Vector2d velocity{0.0, 0.0};
-  double radius_true_m = 0.0;
+  double radius_true_m = 0.0;  // See the CORRECTION above: enlargement-inclusive, not "true".
 
   // Variances, matching TrackState2D's units and per-axis structure (m^2, (m/s)^2, m^2).
   Eigen::Vector2d center_variance{0.0, 0.0};
@@ -97,7 +113,12 @@ struct SafetyObstacle {
   Eigen::Vector2d center{0.0, 0.0};
   Eigen::Vector2d velocity{0.0, 0.0};
 
-  double radius_true_m = 0.0;      // Best uninflated estimate; oracle radius in oracle mode.
+  // The safety stage's PASS-THROUGH of PerceptionObstacle::radius_true_m on the estimated path,
+  // and the ground-truth radius on the oracle path. On the estimated path it therefore carries
+  // the same enlargement-inclusive value - see the CORRECTION on PerceptionObstacle above. It
+  // is reported so the evaluator can attribute the inflation; it is not a claim about the
+  // object's real size.
+  double radius_true_m = 0.0;
   double radius_inflated_m = 0.0;  // What DPCBF is fed. Always >= radius_true_m.
 
   // Isotropic positional margin already folded into radius_inflated_m, reported

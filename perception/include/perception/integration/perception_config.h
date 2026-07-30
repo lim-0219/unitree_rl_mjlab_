@@ -289,6 +289,13 @@ struct DetectionConfig {
   bool circles_from_visibles = true;  // UPSTREAM default.
   bool use_split_and_merge = true;    // UPSTREAM default.
 
+  // UPSTREAM default (true). A segment that produced an accepted circle is dropped from the
+  // segment list, so the two detector outputs partition the scan rather than describing the
+  // same points twice. Not in the section-14 key list, which names the thresholds; it is a
+  // ported extractor parameter all the same and is exposed here under upstream's own name so
+  // the port and its regression oracle stay tunable with one set of numbers.
+  bool discard_converted_segments = true;
+
   // Preallocation maxima. Splitting can produce more primitives than clusters, which is
   // why max_primitives is the larger of the three.
   int max_clusters = 256;
@@ -300,13 +307,39 @@ struct DetectionConfig {
 // no confirmation gate, only a timer-driven fade counter, and replacing that with a
 // measurement-driven lifecycle is the deliberate design change recorded as risk R11.
 struct TrackingConfig {
-  double process_variance = 0.01;       // UPSTREAM default.
-  double process_rate_variance = 0.10;  // UPSTREAM default.
-  double measurement_variance = 1.00;   // UPSTREAM default.
+  // RETUNED, not upstream's. Per-second noise densities (m^2/s, (m/s)^2/s) rather than
+  // upstream's per-100-Hz-tick variances, and re-sized because this subsystem's R is 2-3 orders
+  // of magnitude smaller than upstream's flat 1.00 m^2 - only the Q/R ratio reaches the Kalman
+  // gain, so carrying upstream's Q across would invert its behaviour rather than preserve it.
+  // Set by an NIS sweep; see configs/perception.yaml for the numbers and
+  // core/tracking/kf_circle_tracker.h change (a) for the dt scaling.
+  double process_variance = 0.0001;
+  double process_rate_variance = 0.03;
+
+  // UPSTREAM default, with a narrowed role: the FALLBACK measurement variance for an
+  // observation that reports a zero sigma. The detector's per-observation sigmas are the
+  // primary source. See kf_circle_tracker.h, change (e).
+  double measurement_variance = 1.00;
 
   // UPSTREAM default (`min_correspondence_cost`): the association gate, a Euclidean
   // distance in (x, y, r) space, in metres.
   double min_correspondence_cost_m = 0.30;
+
+  // NEW, and the numbers the tracking phase is answerable for. Every one of them is documented
+  // at its point of use in core/tracking/kf_circle_tracker.h - the rationale lives with the
+  // algorithm, not with the parser.
+
+  // Weight on the radius term of the association cost, in (0, 1]. 1.0 is upstream's unweighted
+  // cost exactly. 0.25 is the response to the measured short-arc radius bias.
+  double association_radius_weight = 0.25;
+
+  // Calibration of the detector's PROVISIONAL measurement sigmas: scale, then floor in metres.
+  double measurement_sigma_scale = 1.0;
+  double measurement_sigma_floor_m = 0.005;
+
+  // Prior variance on a newborn track's rate state, (m/s)^2. 0.8 m/s is the arena's top
+  // obstacle speed (dpcbf_config.yaml `speed_range`), so 0.64 covers it and nothing more.
+  double initial_rate_variance = 0.64;
 
   // NEW (measurement-driven lifecycle). Three hits at 10 Hz is the 0.3 s confirmation
   // delay the tracking acceptance gate allows.
@@ -334,15 +367,33 @@ struct SafetyConfig {
   double min_track_age_s = 0.20;
   int min_track_hits = 3;
 
-  // radius <- max(fitted, enclosing) + k_sigma*sigma_r + fixed + latency*|v|.
+  // The implemented rule, and the two terms the architecture doc's one-line formula does not
+  // have, are documented at length in core/safety/safety_state_generator.h and beside these
+  // keys in the shipped configs/perception.yaml. In brief:
+  //   radius = max(radius_true_m, min_radius_m) + k_sigma*(sigma_r + sigma_pos) + fixed
+  //            + (age_s + latency_inflation_s)*|v|
+  // k_sigma was RETAINED at 2.0 after a P10 sweep rather than read off a chi-square quantile;
+  // the chi-square model is rejected on this data because the errors are bias-dominated.
   double radius_inflation_k_sigma = 2.0;
-  double radius_inflation_fixed_m = 0.05;
-  double latency_inflation_s = 0.15;  // One scan period plus processing.
-  bool use_enclosing_radius = true;   // max(fitted, enclosing) rather than fitted alone.
 
-  // Radius floor, the candidate answer to open Q13 (unknown radius when arcs stay short):
-  // 0.20 m is the minimum of dpcbf_config.yaml's `radius_range`, i.e. the smallest object
-  // that exists in this arena at all.
+  // The only configured term besides detection.radius_enlargement_m that covers a SYSTEMATIC
+  // radius under-estimate. Their sum is held to a measured floor by a cross-field constraint.
+  double radius_inflation_fixed_m = 0.05;
+
+  // One scan period plus processing. This IS the doc's `latency * k_lat`; the coefficient is
+  // folded in, there is no separate k_lat.
+  double latency_inflation_s = 0.15;
+
+  // A DOCUMENTED NO-OP: `radius_enclosing_m` does not survive the tracker, and P10 measured it
+  // SMALLER than the fitted radius on 20 of 20 corpus circles, so plumbing it through would
+  // carry a term that never binds. Retained because the schema is frozen; asserted inert.
+  bool use_enclosing_radius = true;
+
+  // Radius floor, applied to the BASE radius before inflation. 0.20 m is the minimum of
+  // dpcbf_config.yaml's `radius_range`, i.e. the smallest object that exists in this arena.
+  //
+  // Q13, RESOLVED, and not the way the open question guessed: this is a DEGENERATE-FIT GUARD,
+  // not the answer to the short-arc radius bias. P10 measured it binding on 0 of 171 emissions.
   double min_radius_m = 0.20;
 
   // Ceiling, to stop a degenerate fit inflating into a wall. Must be >= the detector's

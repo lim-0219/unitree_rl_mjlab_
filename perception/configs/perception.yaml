@@ -352,6 +352,10 @@ perception:
     circles_from_visibles: true  # UPSTREAM.
     use_split_and_merge: true    # UPSTREAM.
 
+    # UPSTREAM. A segment that became an accepted circle leaves the segment list, so the two
+    # detector outputs partition the scan instead of describing the same points twice.
+    discard_converted_segments: true
+
     # Preallocation maxima. Splitting can produce more primitives than clusters, which is
     # why max_primitives is the largest of the three.
     max_clusters: 256
@@ -366,10 +370,82 @@ perception:
   # that with a measurement-driven lifecycle is a deliberate design change.
   # -------------------------------------------------------------------------------------
   tracking:
-    process_variance: 0.01           # UPSTREAM.
-    process_rate_variance: 0.10      # UPSTREAM.
+    # PROCESS NOISE, per-second densities (m^2/s and (m/s)^2/s). NOT upstream's numbers, and
+    # this is the one place the ported tracker had to be retuned rather than transcribed.
+    #
+    # Upstream applies diag(0.01, 0.10) once per 100 Hz timer tick against a measurement
+    # variance of 1.00 m^2. Only the Q/R RATIO matters to a Kalman gain, and this subsystem's R
+    # is two to three orders of magnitude smaller than upstream's because it comes from the
+    # detector's per-observation sigmas (~0.07-0.22 m, i.e. 0.005-0.05 m^2) instead of a flat
+    # 1.00 m^2. Carrying upstream's Q across unchanged would therefore not preserve upstream's
+    # behaviour - it would invert it, leaving process noise dominating the measurement and the
+    # filter under-confident, which shows up directly as a depressed NIS.
+    #
+    # Set by an NIS sweep over the synthetic corpus (tests/unit/tracking_test.cpp reports the
+    # resulting figure; the sweep itself is recorded in perception/docs/architecture.md):
+    #   process_variance      the POSITION channel of a constant-velocity model needs no
+    #                         independent process noise - position evolves exactly as p + v*dt,
+    #                         and all the model uncertainty belongs to the rate channel. 1e-4
+    #                         m^2/s is a numerical-health floor: over one 0.1 s scan it admits
+    #                         (3.2 mm)^2, below the projector's own range quantisation, so it can
+    #                         never dominate a real error while still keeping P from collapsing.
+    #   process_rate_variance sized to cover velocity CHANGE between scans. Over 0.1 s it admits
+    #                         (55 mm/s)^2 and over a second (170 mm/s)^2, which re-converges
+    #                         within a few scans after an obstacle bounces without loosening the
+    #                         steady-state velocity estimate. Upstream's 0.10 measurably worsened
+    #                         velocity RMSE (0.068 -> 0.103 m/s) for no gain anywhere.
+    process_variance: 0.0001
+    process_rate_variance: 0.03
+
+    # UPSTREAM, with a narrowed role: the fallback measurement variance for an observation
+    # that reports a zero sigma. The detector's per-observation sigmas are the primary source.
     measurement_variance: 1.00       # UPSTREAM.
+
     min_correspondence_cost_m: 0.30  # UPSTREAM (association gate in (x, y, r) space).
+
+    # Weight on the radius term of that gate. 1.0 reproduces upstream's unweighted cost.
+    # 0.25 is the response to the measured short-arc radius bias: the fitted radius is
+    # systematically small by up to 0.145 m as a function of visible arc, so a radius step
+    # caused by changing visibility must not be able to break a correct association.
+    association_radius_weight: 0.25
+
+    # Calibration of the detector's PROVISIONAL measurement sigmas against measured innovation
+    # statistics.
+    #
+    # RE-DERIVED after the fit_residual_m correction. The original P9 calibration read
+    # sigma_center_m = 0.145 m against a centre-error RMS of 0.130 m and concluded the formula
+    # was endorsed at scale 1.0. Both halves of that reading were accidents of a defect: the
+    # residual was computed against the ENLARGED radius, so sigma carried radius_enlargement_m
+    # as an additive constant and happened to land near the right magnitude for the wrong
+    # reason. With the residual corrected, sigma_center_m is 0.024 m against the same 0.130 m
+    # error - an implied NIS of 28.5.
+    #
+    # THE SCALE IS STILL 1.0, AND NOW FOR A STATED REASON RATHER THAN A COINCIDENCE. That NIS is
+    # not evidence of a mis-scaled R, because the error it is measured against is not noise:
+    # decomposed along the sensor line of sight over the P8 corpus, the centre error is
+    # +0.1106 m of systematic RADIAL offset (fitted centre pulled toward the sensor - the
+    # sqrt(3)/3 construction, P8 finding 1) with only 0.0416 m of radial scatter and 0.0504 m of
+    # tangential scatter. 74.7% of the error power is BIAS. Inflating R to make the NIS look
+    # like 1 would be absorbing a systematic bias into a stochastic term, which is exactly what
+    # the short-arc bias budget below states cannot work - and it was measured to make things
+    # worse, not better: at scale 2.0 and above the section-12 tracking gates degrade (position
+    # RMSE 0.062 -> 0.107 m, ID switches 0 -> 5-9 on the synthetic corpus). The bias is covered
+    # where a bias has to be covered, by the two flat terms the cross-field constraint enforces.
+    measurement_sigma_scale: 1.0
+
+    # A GUARD against a degenerate zero sigma (CircleObservation::Validate admits sigma == 0,
+    # and a zero R drives the Kalman gain to 1 and the covariance to 0). The property that makes
+    # it a guard rather than a tuning parameter is that it sits below everything the real
+    # detector emits - so it moved with the residual fix. Post-fix the detector's sigma_center_m
+    # spans 0.0144-0.0334 m (190 circles, detection plus moving corpora); the old 0.030 m floor
+    # would now bind on nearly every real observation and silently set the measurement noise.
+    # 0.005 m is an order of magnitude below the smallest observed, and is the same scale as the
+    # detector's own kProvisionalResidualFloorM.
+    measurement_sigma_floor_m: 0.005
+
+    # Prior variance on a newborn track's rate state, (m/s)^2. Obstacles top out at 0.8 m/s
+    # (dpcbf_config.yaml `speed_range`), so 0.8^2 covers the reachable range and nothing more.
+    initial_rate_variance: 0.64
 
     # NEW with the measurement-driven lifecycle. Three hits at 10 Hz is the 0.3 s
     # confirmation delay the tracking acceptance gate allows.
@@ -399,15 +475,68 @@ perception:
     min_track_age_s: 0.20
     min_track_hits: 3            # Must be >= tracking.confirm_hits.
 
-    # radius <- max(fitted, enclosing) + k_sigma*sigma_r + fixed + latency*|v|
+    # THE IMPLEMENTED RULE, as of P10 (see core/safety/safety_state_generator.h for the
+    # evidence behind each departure from the architecture doc's one-line formula):
+    #
+    #   base   = max(radius_true_m, min_radius_m)
+    #   radius = base + k_sigma*sigma_r + k_sigma*sigma_pos + fixed
+    #                 + (age_s + latency_inflation_s)*|v|
+    #
+    # Two terms the doc's formula does not have, both measured rather than assumed:
+    #   * k_sigma*sigma_pos - a safety circle has to contain the true circle, so the CENTRE
+    #     error has to be covered too, and it is the larger of the two (0.204 m worst case
+    #     against 0.169 m for the radius on P9's corpus). The contract already anticipated it:
+    #     SafetyObstacle::position_inflation_m.
+    #   * age_s in the drift horizon - the doc's fixed latency covers only the time between
+    #     generation and consumption. A coasting track admitted at max_age_s (0.30 s) has
+    #     ALREADY drifted up to 0.24 m at the arena's 0.8 m/s, which is twice what the fixed
+    #     0.15 s term covers. In the nominal case age_s is 0 and the two rules coincide.
+    #
+    # k_sigma 2.0 is RETAINED after a sweep, not chosen by a quantile. The sweep (P10, over
+    # three corpora) found the shipped pipeline meets 99.9% containment from k = 0 upward, so
+    # k_sigma is not the binding term; 2.0 is kept for headroom on finite corpora. The
+    # Gaussian answer would be sqrt(chi2_2(0.999)) = 3.72, and the chi-square test that would
+    # justify it is REJECTED on this data - the errors are bias-dominated, measured 99.9% NEES
+    # 100.3 against the 13.8 the filter's own covariance predicts.
+    #
+    # RE-SWEPT and RETAINED after the fit_residual_m correction, which cut what this coefficient
+    # multiplies by 75% (the k_sigma inflation term went from 0.2926 m to 0.0739 m, and the mean
+    # total inflation from 0.4443 m to 0.2413 m). The sweep's shape is unchanged: corpora A and B
+    # still reach 100% containment from k = 0 upward, so the term is still not what carries
+    # containment, and 2.0 still costs little. It is NOT raised to compensate for the smaller
+    # sigma - that would be re-introducing, on the safety side, exactly the constant the
+    # detector-side fix removed.
     radius_inflation_k_sigma: 2.0
+
+    # The only term other than detection.radius_enlargement_m that covers a SYSTEMATIC radius
+    # under-estimate; a variance cannot, because the filter never learns about a bias. The two
+    # are held to a joint floor by a cross-field constraint - see perception_config.cpp - so
+    # turning the enlargement down without raising this fails to load rather than silently
+    # losing containment.
     radius_inflation_fixed_m: 0.05
-    latency_inflation_s: 0.15    # One scan period plus processing.
+
+    # One scan period plus processing. This IS the doc's `latency * k_lat`: there is no
+    # separate k_lat, the coefficient is folded in here.
+    latency_inflation_s: 0.15
+
+    # A DOCUMENTED NO-OP, kept because the schema is frozen. `radius_enclosing_m` is a
+    # detection-stage field that does not survive tracking, so max(fitted, enclosing) has no
+    # operand at the safety stage. Plumbing one through was rejected on measurement, not on
+    # cost: over the whole P8 corpus the enclosing radius is SMALLER than the fitted one in 20
+    # cases out of 20, by 0.254-0.287 m, because it is measured from the sqrt(3)/3 centre that
+    # sits behind the visible arc. This also settles Q11 in the opposite direction to the
+    # architecture doc's section 17 recommendation. Asserted inert by test.
     use_enclosing_radius: true
 
     # SOURCED floor: 0.20 m is the minimum of dpcbf_config.yaml's radius_range, i.e. the
-    # smallest object that exists in this arena at all. This is the candidate answer to the
-    # open question of what to do when an arc stays too short to fit a radius.
+    # smallest object that exists in this arena at all. Applied to the BASE radius, before
+    # inflation.
+    #
+    # Q13, RESOLVED AND NOT THE WAY THE DOC GUESSED: this is a DEGENERATE-FIT GUARD, not the
+    # answer to the short-arc bias. P10 measured it binding on 0 of 171 emissions - the tracked
+    # radius carries the 0.25 m enlargement, so it runs 0.36-0.55 m where the floor is 0.20 m -
+    # while the short-arc bias is covered entirely by that same enlargement. Kept because it
+    # costs nothing and catches a radius filter driven toward zero.
     min_radius_m: 0.20
     max_radius_m: 1.00           # Must be >= detection.max_circle_radius_m.
 

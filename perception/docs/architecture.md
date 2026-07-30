@@ -55,7 +55,9 @@ perception/
     adapters/dpcbf/     oracle_to_dpcbf.h           (the ONLY module that names
                                                      dpcbf::ObstacleState)
     adapters/opencv/    live_scan_view.h            (the live window)
-    core/{pipeline,projection,segmentation,detection,tracking,safety}/
+    core/projection/    scan_projector.h            (the ported p2l binning core;
+                                                     LabeledPointCloud -> ProjectedScan)
+    core/{pipeline,segmentation,detection,tracking,safety}/
                         reserved, empty — the CONTRACTS are frozen, the STAGES are not
   src/                  mirrors the include tree
     adapters/{ros2,travel}/                         reserved, empty
@@ -160,11 +162,13 @@ removes them at preprocessing time rather than at link time.
 | `PERCEPTION_ENABLE` | ON | Build the subsystem at all. OFF makes `perception/CMakeLists.txt` return immediately. |
 | `PERCEPTION_WITH_ROS2` | OFF | Reserved for the optional ROS2 visualization adapter. Currently errors if ON. |
 | `PERCEPTION_WITH_TRAVEL` | OFF | Reserved for the optional TRAVEL segmenter. Currently errors if ON. |
-| `PERCEPTION_BUILD_UPSTREAM_ORACLE` | OFF | Reserved for the Armadillo-linked `obstacle_detector` regression oracle. Currently errors if ON. |
+| `PERCEPTION_BUILD_UPSTREAM_ORACLE` | OFF | Compiles `obstacle_detector`'s ROS-free headers and links Armadillo, building `perception_detection_oracle_test` — the upstream-parity suite for the ported detector. OFF by default because Armadillo is a dependency the rest of the repository does not have. Located via `PERCEPTION_OBSTACLE_DETECTOR_ROOT`, defaulting to `../obstacle_detector`. |
 | `PERCEPTION_BUILD_TESTS` | ON | Build and register the CTest targets. |
 
-The three reserved options fail loudly rather than silently doing nothing, so nobody
-concludes a feature is present because the flag was accepted.
+The two still-reserved options (`PERCEPTION_WITH_ROS2`, `PERCEPTION_WITH_TRAVEL`) fail loudly
+rather than silently doing nothing, so nobody concludes a feature is present because the flag
+was accepted. `PERCEPTION_BUILD_UPSTREAM_ORACLE` became real in P8 and now adds one CTest
+target: 11 tests with it OFF, 12 with it ON.
 
 MuJoCo is located via `PERCEPTION_MUJOCO_ROOT`, defaulting to `../simulate/mujoco`. When
 absent, `perception_core`, `perception_diagnostics`, `perception_config`, `perception_replay`
@@ -368,10 +372,17 @@ later phases will need changed here.
 
 ## 6. Deliberately not implemented yet
 
-Deskew, gravity alignment, ground segmentation, scan projection, detection, tracking,
-safety-state generation, the ESTIMATED half of the DPCBF adapter, every obstacle-source mode
-above `oracle`, the perception thread and its queues, and the ROS2 topic set. (Dump/replay is
-built — §5a. The oracle half of `adapters/dpcbf` and mode 1 of the ladder landed in P3;
+Deskew, gravity alignment, ground segmentation, the ESTIMATED half of the DPCBF adapter,
+every obstacle-source mode above `oracle`, the perception thread and its queues, and the ROS2
+topic set. (Tracking landed in P9 and safety-state generation in P10 — see §8 and §9; both are
+still called by nothing, for the same reason projection and detection are.) (Dump/replay is
+built — §5a. Scan projection landed in P7: `core/projection/scan_projector` is implemented
+and proved bin-for-bin identical to upstream `pointcloud_to_laserscan`, but nothing CALLS it
+yet — there is no pipeline, and its input `LabeledPointCloud` has no producing segmenter
+until P6, so it is exercised only from synthetic fixtures. Detection landed in P8:
+`core/detection/{line_fit, segment_circle_detector}` behind `IDetector2D`, likewise called by
+nothing — see §7 for what it measured. The oracle half of
+`adapters/dpcbf` and mode 1 of the ladder landed in P3;
 Sixteen of its twenty-four record types have no producing stage yet and are covered by
 hand-authored fixtures in `tests/fixtures/synthetic_contracts.h`; the format is correct for
 them now because it is the format their own regression fixtures will be written in.) The root
@@ -394,3 +405,493 @@ frozen, so each is a matter of writing the stage — not of designing the interf
 into. What is still deliberately absent is any logic beyond construction and validation:
 no stage reads a `ProjectedScan`, nothing fills a `TrackState2D`, and `PerceptionFrame` is
 never published because nothing produces one yet.
+
+## 7. Detection (P8) — the ported `obstacle_extractor`, and what measuring it found
+
+`core/detection/segment_circle_detector` implements `IDetector2D::Detect(const ProjectedScan&)`
+→ `{Cluster2D[], FittedPrimitive2D[], CircleObservation[]}`, faithful to the audited
+`obstacle_extractor` semantics with Armadillo replaced by `core/detection/line_fit`. It holds
+per-frame scratch only, reuses it across calls, and allocates nothing in steady state. Nothing
+calls it: there is no pipeline until P12, and its input has no producing projector chain until
+P5–P7 are wired, so it is exercised from `tests/fixtures/detection_scenes.h` and from P7's
+committed golden `ProjectedScan` corpus.
+
+### The Armadillo→Eigen substitution, and the tolerance policy it settled
+
+The open question was whether `arma::pinv` and a QR-based substitute diverge on degenerate
+clusters. Measured over 55 real cluster fits plus 12 constructed degenerate cases
+(`perception_detection_oracle_test`, section A), the boundary is **not** rank deficiency —
+the port reproduces Armadillo's own truncation rule, so a rank-1 fit agrees to 1e-15. The
+boundary is the conditioning of upstream's *endpoint projection*, which divides by
+`D = A² + B²`:
+
+| Class | Definition | Worst endpoint delta | Policy |
+|---|---|---|---|
+| 1. well-posed | ≥3 points, fitted line within 1e3× the data extent of the origin | **1.3e-14 m** | ≤1e-9 asserted. Contains 100% of the fits the pipeline performs. |
+| 2. two-point group | exactly 2 points | 3.8e-6 m at cond 1e11 | Bounded by `cond(X)·eps`, not by the solver. Unreachable at `min_group_points: 5`; documented, not tolerated. |
+| 3. ill-posed projection | `D → 0`: the fitted line passes through the sensor | 6.7e+17 m | Indeterminate in **both** implementations. Counted by `DetectionStats::ill_conditioned_projections`; the radius cap stops such a segment becoming a circle. |
+
+So the answer is **(a) with a named exception list**: ≤1e-9 is achievable, the Armadillo
+oracle is a regression convenience, and the two exceptions are properties of upstream's
+formulation that no substitution could have avoided. Comparing *coefficients* instead of
+endpoints would have produced a spectacular false alarm — on a near-radial cluster they differ
+by 9e+04 while the endpoints agree to 1e-16, because the projection divides the magnitude back
+out. End-to-end parity over 21 scans: worst segment endpoint 1.07e-14 m, circle centre
+1.00e-14 m, radius 4.4e-16 m, identical counts.
+
+### Four findings the later phases need
+
+1. **The √3/3 circle rule misses the centre gate, and it is the rule, not the data.** Worst
+   full-arc centre error **0.115 m** against §12's 0.05 m target; half-arc **0.219 m** against
+   0.15 m. The radius gate is met full-arc (0.028 m ≤ 0.05) and missed half-arc (0.161 m ≤ 0.10
+   is false). An algebraic circle fit on the *same points* recovers centre and radius to machine
+   precision, so the entire gap is the fitting rule. The rule is a circumcircle standing on the
+   chord — its centre sits behind the arc by construction — and it was ported unchanged and not
+   retuned, as the phase required.
+2. **The short-arc radius bias is real and points the unsafe way.** Mean true-radius bias
+   −0.006 m full-arc versus **−0.145 m half-arc**: shorter arcs *under*-estimate, which is the
+   one unrecoverable direction for a safety radius. `CircleObservation` already carries
+   `radius_enclosing_m` alongside `radius_fitted_m` for exactly this choice.
+3. **Split-and-merge barely fires on upstream's default path.** With `use_split_and_merge: true`
+   the divider search is seeded with the least-squares line, and for an L-shaped cluster that
+   line makes the cluster's own *first* point the largest deviation — so `split_index` is 1 and
+   the `min_group_points` guard rejects the split. A closed square gives 1 split with the
+   least-squares seed and 4 with the chord seed. Wall corners therefore survive as single
+   over-long segments, which the radius cap harmlessly rejects, but the stage is much weaker
+   than its name suggests.
+4. **The ±π seam is a coverage hole directly astern.** The ordered point list runs bin 0 → B−1
+   and does not wrap, so an object centred behind the robot arrives as two clusters. Segment
+   merging rejoins them when both halves clear `min_group_points` (measured identical to the
+   head-on view), and the object vanishes entirely when they do not — a 0.25 m cylinder at 5 m
+   astern is undetected while the same cylinder at 5 m ahead is found.
+
+Also measured, and not a defect: at 360 bins a 0.20–0.30 m cylinder falls under
+`min_group_points` beyond roughly 4.6–6.9 m, halving with a half-visible arc. That is the
+angular-resolution floor of the shipped `projection.bins`, and it bounds the useful detection
+range for this obstacle class.
+
+### Two upstream defects, corrected by default
+
+Both were found by transcription, both are reproduced exactly under `UpstreamQuirks::Exact()`
+so the oracle comparison is bit-for-bit rather than approximate, and both are corrected in the
+shipped default. Their combined effect on the corpus is measured, not argued: 4 of 22 scans
+change, worst circle-centre shift **5.2e-2 m**.
+
+* `groupPoints` writes `input_points_.begin()++`, which evaluates to `begin()`, so the first
+  point is compared against itself and counted twice. `fitSegment` then reads one point past
+  the first group — mixing the next cluster's first point into the fit — and reads past `end()`
+  outright when the whole scan is one group.
+* a split records its second half as `num_points - split_index`, one short of the span it owns,
+  because the cloned divider point is not counted. The half's last point is excluded from the
+  fit while still being projected onto as an endpoint.
+
+The port also represents the split's cloned point as a *shared index* between the two halves
+rather than by inserting into a list, which is exactly equivalent and removes the aliasing
+hazard `Cluster2D` was defined to remove.
+
+### Config
+
+One key was added under `detection`: `discard_converted_segments: true`, upstream's own name and
+default. It is a ported extractor parameter — a segment that became an accepted circle leaves
+the segment list — and exposing it keeps the port and its oracle tunable from one set of
+numbers. `radius_enlargement_m` is deliberately still upstream's 0.25 m; retuning it is a later
+decision that finding 2 above is the input to.
+
+The two measurement sigmas (`sigma_center_m`, `sigma_radius_m`) are the only numbers in this
+module that were **chosen** rather than ported: a per-point residual reduced by point count and
+inflated by the `1/(1 − cos α)` geometric dilution of a centre estimated from a short arc, with
+a residual floor and a dilution cap named as constants in the header. They are provisional and
+the tracking phase is what calibrates them against measured innovation statistics.
+
+---
+
+## 8. Tracking (P9) — the ported `obstacle_tracker`, rescheduled onto measurement time
+
+`core/tracking/kf_circle_tracker.cpp` behind `interfaces/i_tracker_2d.h`, with the per-axis filter
+in `core/tracking/axis_kalman.h`. Three independent 2-state `[value, rate]` Kalman filters per
+obstacle (x, y, radius), a Euclidean association gate over (x, y, r), fusion, fission, and a
+tentative → confirmed → coasting lifecycle. This is the first stage in the pipeline that owns
+state across scans; everything above it is a pure function of one frame, by `IDetector2D`'s
+contract.
+
+### Upstream parity, and what it cost
+
+Agreement with upstream's own `utilities/kalman.h` (compiled and linked against Armadillo, not
+transcribed) is **exact — worst |Δ| = 0.0e+00** across 200 steps of upstream's own configuration,
+150 steps of variable dt/R with dt-scaled Q, and 20 predict-only steps, over the full state and
+all four entries of P. The 1e-12 gate is never approached. There was no numerical substitution to
+make here, so unlike P8 there was no tolerance *policy* to settle: the same five expressions run
+in the same order.
+
+### Three upstream defects, found by transcription
+
+Each is asserted by `tests/regression/tracking_oracle_test.cpp` against the real upstream header,
+because each is a fact the port had to make a decision about.
+
+* **D1 — upstream's timer does not coast.** `TrackedObstacle::updateState()` calls `predictState()`
+  then `correctState()`, and `KalmanFilter::correctState()` reads `y`, which is written *only* by
+  `TrackedObstacle::correctState(const CircleObstacle&)`. So the 100 Hz timer re-applies the **last
+  received measurement** at full Kalman gain, roughly ten times per scan. Measured: after 1.0 s of
+  ticks a track seeded at 1.0 m/s has advanced **8.6 mm** instead of 1.0 m, and its velocity
+  estimate has decayed **1.000 → 0.085 m/s**. Risk R11 records the timer model as a determinism
+  problem; this is the stronger reason, and it was not in the register.
+* **D2 — `initKF` never initialises P.** Every upstream track begins at `P = eye` from the
+  `KalmanFilter` constructor: 1.0 m² of claimed positional variance about a position it has just
+  measured, and an arbitrary 1.0 (m/s)² about a velocity it has not measured at all.
+* **D3 — the association penalty is dead code.** `obstacleCostFunction` computes a
+  direction-rotated Mahalanobis-style penalty and then returns `cost / 1.0`, with
+  `// return cost / penalty;` commented out above a TODO. The effective upstream cost already *is*
+  a plain Euclidean distance over (dx, dy, dr) — which is what licenses the port's cost function to
+  be one. The dead code additionally builds `distribution` with **variances** on its diagonal and
+  then uses it as an **information** matrix, so a more uncertain track would score a smaller
+  penalty; recorded so that nobody revives it as written.
+
+### Five deliberate replacements
+
+| # | Upstream | Port | Why |
+|---|---|---|---|
+| R11 | timer-driven update at `loop_rate`, A carrying `1/loop_rate` | measurement-driven dt from consecutive `Update()` stamps | tick count between measurements is a wall-clock scheduling fact, which breaks the determinism the dumps and the same-seed gate require — plus D1 |
+| (a) | Q a stored per-tick constant | `Q(dt) = diag(process_variance·dt, process_rate_variance·dt)`, still diagonal | a fixed per-call Q would divide injected process noise by the scan-rate ratio, re-introducing rate dependence through the covariance |
+| (b) | one fade counter of `loop_rate · tracking_duration` ticks | tentative/confirmed/coasting counted in **scans** | upstream has no confirmation gate at all, so a single spurious detection is published on its second scan |
+| (c) | separate `untracked_obstacles_` list, cost matrix indexed over `[tracked \| untracked]` | tentative tracks are ordinary members of one track list | see the defect this removes, below |
+| (d) | fusion resets P to the identity | the information-weighted merged covariance is kept | upstream computes the merge for the *means* and discards the covariance, so a track fused from four confident estimates emerges less certain than any parent and no longer comparable in the next scan's cost matrix. Measured: 5.6e-4 m² kept versus upstream's 1.0 m² |
+| (e) | one global `measurement_variance` for every axis of every track | per-observation `sigma_center_m` / `sigma_radius_m` from the detector | a short-arc observation must be distinguishable from a full-arc one, which is the point of having measured the bias |
+
+**The defect change (c) removes.** `fissionObstacleUsed` skips any match whose index lands in the
+untracked half (`row_min_indices[idx] >= T`). When two new observations both fall nearest the same
+untracked seed, fission therefore declines to handle them — and the plain-match loop then builds a
+`TrackedObstacle` from that seed for *each* of them, because it records the consumed observation in
+`used_new_obstacles` but never records the consumed old obstacle in `used_old_obstacles`. Two tracks
+are born on top of each other from one seed. With tentative tracks in the single list there is no
+exclusion to skip and no double-spawn path to reproduce; the port's plain-match loop also marks the
+track it consumed, closing the same hole from the other side.
+
+### The NIS calibration, which endorsed P8's sigmas and overruled upstream's Q
+
+P8 left `sigma_center_m`/`sigma_radius_m` provisional and asked this phase to calibrate them
+against measured innovation statistics. Running that check moved a different number than expected.
+
+* **P8's sigmas are sound and are left untouched.** Over the P8 detection corpus the emitted
+  `sigma_center_m` averages **0.145 m** (range 0.067–0.216 m) against an actual centre error of
+  **0.130 m RMS, 0.219 m worst** — an implied NIS of **0.8**, marginally conservative, the safe
+  direction. The prior expectation was the opposite: that a fit-residual statistic would badly
+  under-state a bias-dominated error. The `1/(1 − cos α)` dilution term supplies the missing
+  magnitude on exactly the short arcs where the bias lives. `measurement_sigma_scale` is therefore
+  **1.0 by evidence**, and `measurement_sigma_floor_m = 0.030` is only a guard against the zero
+  sigma `CircleObservation::Validate()` admits — the detector's smallest emitted sigma is 0.067 m,
+  so the floor never binds in operation.
+* **Upstream's process noise had to go.** Only the Q/R *ratio* reaches a Kalman gain, and change
+  (e) replaces upstream's flat R of 1.00 m² with variances 20–200× smaller. Holding Q at upstream's
+  magnitude across that substitution does not preserve upstream's filter; it produces one in which
+  process noise dominates the measurement. Measured mean NIS on the corpus was **0.18–0.41** —
+  badly under-confident. Sweep (floor lifted so only the reported sigma acts):
+
+  | `process_variance` | `process_rate_variance` | NIS (const-vel / occlusion) | vel RMSE (const-vel / occlusion) |
+  |---|---|---|---|
+  | 0.01 (upstream-scaled) | 0.10 | 0.305 / 0.358 | 0.068 / 0.069 |
+  | 0.01 (upstream-scaled) | 0.30 | 0.289 / 0.339 | 0.105 / 0.105 |
+  | 0.001 | 0.03 | 0.608 / 0.724 | 0.062 / 0.058 |
+  | **0.0001** | **0.03** | **0.688 / 0.821** | **0.068 / 0.062** |
+  | 0.00003 | 0.03 | 0.695 / 0.831 | 0.068 / 0.062 |
+
+  Shipped: `process_variance: 0.0001`, `process_rate_variance: 0.03`. The position channel of a
+  constant-velocity model needs no independent process noise — position evolves exactly as
+  `p + v·dt` — so 1e-4 m²/s is a numerical-health floor admitting (3.2 mm)² per scan, below the
+  projector's own range quantisation. NIS does not reach 1.0 because the corpus has *exactly*
+  constant velocity, so any Q > 0 reads as conservative; driving Q to zero to chase it would
+  overfit a manoeuvre-free fixture, which is why a **bounce** stream (a full 0.8 → −0.8 m/s
+  reversal) was added beyond §10's four: it sizes the rate channel from below. Recovery to within
+  the 0.10 m/s gate takes **7 scans (0.7 s)**.
+
+### The association gate, and P8's finding 2
+
+Upstream's cost weights a metre of radius disagreement exactly as much as a metre of position
+disagreement. It could afford that because it never separated full-arc from half-arc error. P8 did,
+and measured the de-enlarged radius biased small by 0.006–0.145 m as a function of visible arc — and
+because the same short arc also drives the centre off by up to 0.15 m, the two error terms **peak
+together**, so upstream's cost adds them in quadrature exactly when the position residual is
+already largest.
+
+The response is a weight, not a wider radius gate: the channel is *biased*, so it should inform
+identity **less**, rather than keep its full vote and forgive larger disagreements. A weight also
+keeps one threshold instead of introducing a second, and `association_radius_weight: 1.0` recovers
+upstream's cost exactly, which is what pins the port. Shipped **0.25**. Measured worst-case cost
+against the 0.30 m gate:
+
+| Stream | w = 1.0 (upstream) | w = 0.25 (shipped) |
+|---|---|---|
+| visibility change mid-track | 0.232 m — **77% of gate** | 0.173 m — 58% |
+| gap then visibility change | 0.200 m — 67% | 0.153 m — 51% |
+| no radius bias present | 0.103 m | 0.101 m |
+
+A note on what down-weighting gives up, recorded rather than asserted away: a 0.75 m size
+difference now contributes 0.188 m of the 0.30 m gate, so a co-located object of a wildly different
+size is no longer rejected on radius alone. That is intended — at 10 Hz two obstacles do not swap
+sizes between scans, so radius is a weak identity cue and position is the strong one, and a genuine
+one-to-many is the fission path's job.
+
+**A correction to how finding 2 must be read.** The bias is on the **de-enlarged** radius
+(`radius_fitted_m − radius_enlargement_m`, upstream's `true_radius`), which is how P8 measured it.
+The raw `radius_fitted_m` the tracker associates on is that plus the constant 0.25 m enlargement, so
+against ground truth it *over*-estimates (+0.089 to +0.278 m on the corpus) — measuring it without
+de-enlarging first reports the enlargement as an error. None of that changes the design: the
+enlargement is a constant and cancels in the difference between two frames, so the frame-to-frame
+variation of the fitted radius **is** the variation of the bias, and that variation is what the gate
+sees.
+
+### P8's finding 4 (±π seam) against the coasting lifecycle — verified, not assumed
+
+The finding-4 geometry reproduced exactly: a 0.25 m cylinder at 5 m astern, swept past the seam at
+1.2 m/s, occupies ~6 bins at 1° resolution and splits across the non-wrapping ordered point list.
+
+* **The hole is real: 2 of 40 scans undetected**, and it is bracketed by frames where only one half
+  clears `min_group_points` — so the object reappears as a *partial arc*, with the radius biased.
+  Findings 2 and 4 are not independent hazards; the seam manufactures the visibility change.
+* **Coasting survives it comfortably.** 2 scans against `delete_misses: 10`, **0 ID switches**, a
+  track present in 38 of 40 frames. Worst unweighted reacquisition cost 0.159 m against the 0.30 m
+  gate.
+* Fitted-radius swing across the crossing: **0.056 m peak-to-peak, 0.056 m in a single scan**, from
+  a one-bin change in arc length with the object unchanged. Worst de-enlarged under-estimate
+  0.056 m, inside P8's 0.006–0.145 m range.
+
+The gap is a *mid-range* phenomenon: closer objects subtend enough bins that each half still clears
+`min_group_points`, and farther ones fall under it whether split or not.
+
+### §12 tracking gates
+
+All met. Position and velocity RMSE are asserted on the zero-mean-error streams; the two visibility
+streams inject a deliberate 0.15 m **systematic** offset, and no estimator removes a bias it is not
+told about — conservative inflation is P10's job, not this phase's.
+
+| Gate | Target | Measured |
+|---|---|---|
+| velocity RMSE @ ≤ 0.8 m/s | ≤ 0.1 m/s | 0.065–0.078 m/s |
+| position RMSE | ≤ 0.05 m | 0.024–0.031 m |
+| ID switches per crossing pair | ≤ 1 | **0** |
+| confirmation delay | ≤ 3 scans | exactly 3 |
+| deletion delay | ≤ `tracking_duration` (2.0 s) | 1.0 s (`delete_misses` binds first) |
+| stale-output rate | 0 | **0** across all 7 streams |
+
+Mean NIS by stream: 0.61 (constant velocity), 0.61 (crossing), 0.69 (occlusion), 0.94 (radius
+jitter), 1.03 (visibility change), 0.77 (reacquisition), 1.62 (bounce — the manoeuvre the model
+cannot represent, as expected).
+
+### Lifecycle detail worth carrying forward
+
+A **tentative track dies on its first miss**, which is upstream's semantics for the same object
+(`untracked_obstacles_` is cleared and reassigned every callback). The cost is that confirmation
+requires `confirm_hits` *consecutive* scans, so the confirmation delay is a hard 3 scans rather than
+a distribution, and an obstacle that flickers on its first three scans never confirms. Flagged for
+P10 rather than papered over.
+
+### Config
+
+Four keys added under `tracking`, all of them numbers this phase is answerable for:
+`association_radius_weight`, `measurement_sigma_scale`, `measurement_sigma_floor_m`,
+`initial_rate_variance`. Two existing keys changed value — `process_variance` and
+`process_rate_variance`, per the sweep above — and they are no longer labelled UPSTREAM.
+`measurement_variance` keeps upstream's 1.00 with a narrowed role: the fallback R for an
+observation reporting a zero sigma, which stops a zero R driving the gain to 1 and the covariance
+to 0.
+
+---
+
+## 9. Safety-state generation (P10) — gating, conservative inflation, and three things the doc got wrong
+
+`core/safety/safety_state_generator.cpp`, consuming a whole `Tracking2DResult` and emitting
+`SafetyObstacle`s. Stateless between frames by design: everything with memory lives in the
+tracker, and a safety stage that remembered anything could disagree with the estimator about
+what is being tracked.
+
+### Reconciliation — what the seam actually looks like
+
+The architecture doc's §6 formula is
+`radius ← max(fitted, enclosing) + k_σ·σ_r + latency·|v|·k_lat`. Locating each symbol in the
+shipped code found that **neither named radius is where the formula implies**.
+
+* **`enclosing` is not reachable.** `radius_enclosing_m` lives on `CircleObservation`, a
+  *detection*-stage contract. Neither `TrackState2D` nor `PerceptionObstacle` carries it, so it
+  does not survive tracking and `max(fitted, enclosing)` has no second operand at this seam.
+* **`fitted` is not the fitted radius.** `PerceptionObstacle::radius_true_m` is
+  `TrackState2D::radius_m`, which is the Kalman filter driven by `radius_fitted_m` — and that
+  observation already includes `detection.radius_enlargement_m`. In upstream's vocabulary the
+  field carries `CircleObstacle::radius`, not `true_radius`. **The comment on the contract said
+  the opposite and has been corrected**; believing it and "restoring" the true radius by
+  subtracting 0.25 m would have removed the only term covering P8's short-arc under-estimate.
+  Measured over-statement on the P8 corpus: **+0.089 m to +0.278 m**.
+* **`k_lat` does not exist as a config key.** `safety.latency_inflation_s` *is* the coefficient.
+
+### Q11 — resolved, and against the doc's own recommendation
+
+Architecture doc §17 recommends "conservative enclosing over fitted". **Measured over all 20
+fitted circles in the P8 corpus, the enclosing radius is SMALLER than the fitted one in 20 cases
+out of 20, by 0.254–0.287 m.** It is never once the larger. The cause is geometric: the enclosing
+radius is measured from the √3/3 centre, which sits behind the visible arc by construction
+(P8 finding 1 put that offset at 0.09–0.19 m), and only the sensor-facing arc is ever hit — so
+the farthest contributing point is barely past the true radius, while the fitted radius carries a
+flat +0.25 m. Following the recommendation would under-estimate every radius by 0.25–0.29 m,
+which is the doc's own definition of the one unrecoverable error.
+
+Consequently no fourth filtered channel was added to carry the enclosing radius through the
+tracker: it would provably never bind. `safety.use_enclosing_radius` is retained (frozen schema)
+as a documented no-op, with a test asserting both settings produce identical output.
+
+### The implemented rule, and two terms the doc's formula lacks
+
+```
+base   = max(radius_true_m, min_radius_m)
+radius = base + k_σ·σ_r + k_σ·σ_pos + fixed + (age_s + latency_inflation_s)·|v|
+```
+
+* **`k_σ·σ_pos`.** Containment means the true *disc* is inside the safety *disc*, so the centre
+  error has to be covered too — and it is the larger of the two (worst 0.204 m against 0.169 m
+  for the radius on P9's corpus). The contract already anticipated this:
+  `SafetyObstacle::position_inflation_m` exists and is reported separately.
+* **`age_s` in the drift horizon.** The doc's fixed latency covers only generation→consumption.
+  A coasting track admitted at `max_age_s` (0.30 s) has *already* drifted up to 0.24 m at the
+  arena's 0.8 m/s — twice what the 0.15 s term covers. Using `age_s` is conservative by
+  construction, not by tuning: `age_s` is measured from the *measurement* stamp while the
+  published centre is the estimate at the (later or equal) *scan* stamp, so the real
+  extrapolation is ≤ `age_s`. In the nominal case `age_s` is 0 and the two rules coincide.
+
+Staleness is `now − PerceptionObstacle::last_update_stamp_s`, which P9 defines as the last
+*matched measurement* time, not an advanced-to frame time. A stale track is **dropped**, never
+emitted with a shrunk radius (§11's safety-dominance policy) — asserted both ways, since "the
+stale one is gone" and "nothing stale was published smaller" are different claims.
+
+`safety.min_track_hits` forced a design decision: the hit count is **not on**
+`PerceptionObstacle` and is not recoverable from it (`confidence` is a ratio, `track_age_s` is a
+duration). The stage therefore consumes the whole `Tracking2DResult` and joins against
+`TrackState2D` by id. Without that join the key would be silently inert whenever it exceeded
+`tracking.confirm_hits`.
+
+### Q12 — the calibration sweep, and what it actually found
+
+k_σ swept over {0, 1, 2, 3, 3.72, 5, 8, 12} on three corpora: **A** the shipped pipeline
+(ray-cast moving cylinders → real detector → real tracker, 171 samples), **B** P9's seven streams
+with their radius channel rebased onto the detector's convention (312), **C** P9's streams
+verbatim, i.e. with the enlargement absent (312).
+
+| k_σ | A containment / worst margin | B | C |
+|---|---|---|---|
+| 0.00 | 100 % / +0.069 m | 100 % / +0.085 m | **87.18 %** / −0.116 m |
+| 1.00 | 100 % / +0.306 m | 100 % / +0.126 m | **88.14 %** / −0.075 m |
+| **2.00** | **100 % / +0.509 m** | **100 % / +0.166 m** | **93.91 %** / −0.034 m |
+| 3.00 | 100 % / +0.572 m | 100 % / +0.207 m | 100 % / +0.006 m |
+| 3.72 | 100 % / +0.572 m | 100 % / +0.236 m | 100 % / +0.036 m |
+
+**k_σ is retained at 2.0**, and the sweep's real product is not that number. The shipped pipeline
+meets 99.9 % containment from k_σ = 0 upward, so k_σ is *not the binding term* — 2.0 is kept for
+headroom on a 171-sample corpus, not because it is required. What the sweep exposed is that
+containment was resting on a **detection** parameter: remove the enlargement and the shipped
+config falls to 93.91 %.
+
+That shortfall is a **systematic bias**, and a bias is covered by a fixed term, not by a
+variance — raising `safety.radius_inflation_fixed_m` to 0.20 m restores corpus C to 100 % at the
+*unchanged* k_σ. So rather than double-paying for margin the shipped configuration already has,
+P10 added a cross-field constraint:
+
+> `detection.radius_enlargement_m + safety.radius_inflation_fixed_m ≥ 0.20 m`
+
+0.20 m is P9's 0.169 m worst case rounded up. The shipped config satisfies it at 0.30 m; zeroing
+the enlargement now fails to load instead of silently losing containment. `config_test` covers it.
+
+### The χ² check §12 asks for — and it is a rejection
+
+Centre NEES and radius NIS, normalized by the tracker's own per-axis variances, over corpus B:
+
+| statistic | measured | χ² prediction |
+|---|---|---|
+| centre NEES mean | 9.13 | 2.00 (2 dof) |
+| centre NEES 99.9 % quantile | 100.30 | 13.82 |
+| radius NIS 99.9 % quantile | 179.16 | 10.83 |
+
+The model is rejected outright. The errors this pipeline makes are bias-dominated — P8's
+short-arc centre offset and radius bias are systematic, not noise — so the filter's covariance
+does not describe them. **This is why k_σ was calibrated empirically rather than read off a
+quantile**; √χ²₂(0.999) = 3.72 would be the Gaussian answer and it is neither necessary nor
+sufficient on its own. Reporting the rejection *is* the calibrated-coverage result.
+
+### Q13 — the short-arc radius floor, decided on numbers
+
+The doc's candidate was a hard floor at `safety.min_radius_m` (0.20 m). The competing candidate
+was that `k_σ·σ_r` already scales up on short arcs via the detector's `1/(1 − cos α)` dilution.
+**Neither is the answer, and the floor is kept anyway for a different job.**
+
+* The floor **binds on 0 of 171 emissions**. The tracked radius carries the 0.25 m enlargement,
+  so it runs 0.36–0.55 m where the floor is 0.20 m. No emitted state under-estimates the true
+  radius at all, so there is nothing for a floor to rescue. It is retained as a **degenerate-fit
+  guard** — a radius filter driven toward zero — and does exactly that in its own test.
+* `k_σ·σ_r` **is** large on the shipped pipeline (worst 0.283 m) but *not because it tracks the
+  bias*. The detector computes `fit_residual_m` against the **enlarged** radius, so the residual
+  and every σ derived from it carry the same 0.25 m constant. Same detector, same scenes, only
+  the enlargement changed: **mean `sigma_radius_m` 0.128 m at 0.25 m enlargement, 0.024 m at
+  zero** — a 5.4× artefact. Remove the enlargement and the term collapses while the bias it
+  appeared to cover does not move.
+
+What actually covers the short-arc bias is the enlargement itself, which is why de-enlarging is
+forbidden in the safety stage and why the cross-field constraint above exists.
+
+### The confirmation-fragility question, answered by scenario
+
+**Tentative tracks are not emitted.** A one-scan track has a zero velocity (the birth prior) and
+a radius from a single unvalidated fit; publishing it feeds DPCBF a stationary constraint at a
+possibly-artefactual location, and a spurious constraint is not a free safety win — it can push
+the QP toward infeasibility or steer the robot into a real hazard to avoid an imaginary one. The
+designed net for "something is out there and perception has not caught up" is §16's **per-frame**
+fallback, which switches the whole frame rather than mixing a half-trusted estimate into a
+trusted set. `SafetyStats::tentative_suppressed` keeps the decision visible.
+
+The stress case was built rather than reasoned about: a **new** obstacle whose first appearance
+is already inside the ±π seam hole (P8 finding-4 geometry, 0.25 m cylinder at 5 m, entering
+within 0.06 rad of the seam). Measured over 40 frames: detected in 37, longest detection gap
+**3 scans**, **1 tentative track killed by a miss** — so the fragility is genuinely exercised —
+tracker confirmed in 34 frames, safety emitted in 34. First detection frame 0, first publication
+frame 6: **0.6 s**, exactly `confirm_hits` (3) + `min_track_age_s` (2 scans) + the 3-scan seam
+gap, and nothing else. Whenever it is published it contains the object (worst margin +0.639 m).
+
+### §12 safety-generation gates
+
+Measured on corpus A — the shipped pipeline, 171 samples across four moving ray-cast scenes.
+Containment means `‖c_truth − c_safety‖ + r_truth ≤ r_inflated`, the conjunction, not either half.
+
+| Gate | Target | Measured |
+|---|---|---|
+| conservative containment | ≥ 99.9 % | **100.0000 %** (worst margin +0.509 m) |
+| radius under-estimation rate | ≤ 0.1 % | **0.0000 %** |
+| position/velocity uncertainty coverage (χ² test) | calibrated | calibrated empirically; **χ² model rejected** (above) |
+| latency inflation correctness (analytic) | — | exact to **1e-15 m** over a speed × age grid |
+
+Containment also holds at **100 %** with the latency term zeroed, so the uncertainty terms carry
+it without the drift term paying for them.
+
+**The cost, which P11 and P15 need.** Mean inflation 0.444 m, decomposing as elapsed drift
+0.009 m + k_σ terms 0.293 m + fixed 0.050 m + latency drift 0.105 m. A 0.25 m arena cylinder is
+therefore presented to DPCBF at roughly **0.94 m** before the filter's own `s = 1.05` and
+`r_rob`. Containment says nothing about whether the constraint set is still *usable*; this is the
+number the §12 intervention-rate and QP-feasibility gates will be decided by.
+
+### Velocity spike clamping (R10, doc §17)
+
+In the safety stage, not the tracker: the tracker's job is to report what its filter believes,
+and a quietly clipped rate state is an estimator whose NIS statistics stop meaning anything (P9
+depends on those). The clamp preserves direction and scales magnitude to `max_speed_mps`; the
+obstacle is **not** dropped, because a spike is evidence of a real object tracked badly. The
+inflation uses the *unclamped* speed — the clamp bounds what DPCBF integrates, the inflation
+bounds where the object might be — with `max_radius_m` keeping that finite.
+
+Fault-injected, and getting the fault in took one correction worth recording: **a single 3 m
+displacement produces no spike at all**, because the association cost exceeds
+`min_correspondence_cost_m` and the tracker simply drops the observation and coasts. Only
+displacements that stay *inside* the gate reach the rate channel — an association *drag*, which
+is precisely what R10 names. Sustained 0.25 m/scan for 14 scans drove the KF rate state to
+**3.225 m/s**; every emitted state came out at exactly 1.600 m/s, the clamp firing on 13 of 37
+emissions. A 0.80 m/s velocity — the arena maximum — passes through untouched. A second finding
+falls out: this filter damps a velocity fault hard, and a short spike does not survive it.
+
+### Config
+
+No new keys. `k_sigma`, `fixed`, `latency` and `min_radius_m` keep their shipped values; what
+changed is the commentary, which now states the implemented rule rather than the doc's formula,
+and one new **cross-field constraint** (the short-arc bias budget above). `use_enclosing_radius`
+is documented as a no-op with a test to keep it one.

@@ -1,0 +1,26 @@
+# P7 projection golden fixtures.
+#
+# Produced by perception_projection_golden_capture. The `ranges` committed in
+# projected_scans.jsonl are the output of the VERBATIM upstream reference
+# (tests/regression/p2l_reference.h), NOT of ScanProjector - see that file's
+# header for why the direction matters.
+#
+# input_digest  FNV-1a 64 over the raw bits of every point's xyz and label,
+#               in order, over the WHOLE scene including non-projected labels.
+# output_digest FNV-1a 64 over the raw bits of the 360 committed range floats,
+#               which pins the NaNs that no decimal comparison can pin.
+#
+# bins=360 angle=[-3.1415926535897931, 3.1415926535897931] range=[0.10000000000000001, 10] band=[-0.69999999999999996, 0.20000000000000001]
+#
+# scene  points  non_ground  binned  occupied_bins  max_bin  input_digest  output_digest  guard_reads
+axis_cross              5      5      5      5      1 898c687d75792d43 7de5cd1718add36a   1
+bin_centres            45     45     45     45      1 951c26bd177e03ee 005e05f1cd23b7e4   0
+angle_seam             14     14     14      2      7 54bf69da22b10577 d5b94bae2e0e3c53   4
+range_edges             8      8      2      2      1 cebd7de28f709127 33f4659044be17cb   0
+height_band             9      9      4      4      1 067bbf4739a9eb52 d5ec6fdc0d9b3343   0
+nearest_return         20     20     20      3     12 7dfadc774e6e0e50 1731d7a5d073d5e3   0
+non_finite             10     10      2      2      1 ae9eedcd5f3bdcdb 3df70e44cce18c33   0
+mixed_labels          600    152    152    120      3 f83606895e752663 1d83e964b3c3e65a   0
+all_ground            200      0      0      0      0 d6cf71a89317d3cd 16ffc8d01a9030c3   0
+dense_random         4000   4000    976    334      9 9cc45f36d26807e7 4b626599e7dedf65   0
+arena_cylinders      4080   3240   3240    354    130 48b08cfb5734e260 2f507f0804866dfd   0

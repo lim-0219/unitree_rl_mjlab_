@@ -205,7 +205,8 @@ void LoadDetection(const YAML::Node& node, DetectionConfig& out) {
                     {"min_group_points", "max_group_distance_m", "distance_proportion",
                      "max_split_distance_m", "max_merge_separation_m", "max_merge_spread_m",
                      "max_circle_radius_m", "radius_enlargement_m", "circles_from_visibles",
-                     "use_split_and_merge", "max_clusters", "max_primitives", "max_circles"});
+                     "use_split_and_merge", "discard_converted_segments", "max_clusters",
+                     "max_primitives", "max_circles"});
   if (node["min_group_points"]) out.min_group_points = node["min_group_points"].as<int>();
   if (node["max_group_distance_m"]) {
     out.max_group_distance_m = node["max_group_distance_m"].as<double>();
@@ -232,6 +233,9 @@ void LoadDetection(const YAML::Node& node, DetectionConfig& out) {
   if (node["use_split_and_merge"]) {
     out.use_split_and_merge = node["use_split_and_merge"].as<bool>();
   }
+  if (node["discard_converted_segments"]) {
+    out.discard_converted_segments = node["discard_converted_segments"].as<bool>();
+  }
   if (node["max_clusters"]) out.max_clusters = node["max_clusters"].as<int>();
   if (node["max_primitives"]) out.max_primitives = node["max_primitives"].as<int>();
   if (node["max_circles"]) out.max_circles = node["max_circles"].as<int>();
@@ -240,7 +244,9 @@ void LoadDetection(const YAML::Node& node, DetectionConfig& out) {
 void LoadTracking(const YAML::Node& node, TrackingConfig& out) {
   RejectUnknownKeys(node, "perception.tracking",
                     {"process_variance", "process_rate_variance", "measurement_variance",
-                     "min_correspondence_cost_m", "confirm_hits", "delete_misses",
+                     "min_correspondence_cost_m", "association_radius_weight",
+                     "measurement_sigma_scale", "measurement_sigma_floor_m",
+                     "initial_rate_variance", "confirm_hits", "delete_misses",
                      "max_coast_s", "enable_fusion", "enable_fission", "max_tracks"});
   if (node["process_variance"]) out.process_variance = node["process_variance"].as<double>();
   if (node["process_rate_variance"]) {
@@ -251,6 +257,18 @@ void LoadTracking(const YAML::Node& node, TrackingConfig& out) {
   }
   if (node["min_correspondence_cost_m"]) {
     out.min_correspondence_cost_m = node["min_correspondence_cost_m"].as<double>();
+  }
+  if (node["association_radius_weight"]) {
+    out.association_radius_weight = node["association_radius_weight"].as<double>();
+  }
+  if (node["measurement_sigma_scale"]) {
+    out.measurement_sigma_scale = node["measurement_sigma_scale"].as<double>();
+  }
+  if (node["measurement_sigma_floor_m"]) {
+    out.measurement_sigma_floor_m = node["measurement_sigma_floor_m"].as<double>();
+  }
+  if (node["initial_rate_variance"]) {
+    out.initial_rate_variance = node["initial_rate_variance"].as<double>();
   }
   if (node["confirm_hits"]) out.confirm_hits = node["confirm_hits"].as<int>();
   if (node["delete_misses"]) out.delete_misses = node["delete_misses"].as<int>();
@@ -578,6 +596,24 @@ void PerceptionConfig::Validate() const {
   if (!(tracking.min_correspondence_cost_m > 0.0)) {
     Fail("tracking.min_correspondence_cost_m must be > 0");
   }
+  // A zero weight would delete the radius channel from the association cost, which is a
+  // different rule rather than a down-weighted one; a weight above 1 would give the biased
+  // channel more say than upstream gave it, which is the opposite of what the bias measurement
+  // calls for.
+  if (!(tracking.association_radius_weight > 0.0) || tracking.association_radius_weight > 1.0) {
+    Fail("tracking.association_radius_weight must lie in (0, 1]");
+  }
+  if (!(tracking.measurement_sigma_scale > 0.0)) {
+    Fail("tracking.measurement_sigma_scale must be > 0");
+  }
+  // The floor is what stops a zero measurement sigma driving the Kalman gain to 1 and the
+  // covariance to 0, so it may not itself be zero.
+  if (!(tracking.measurement_sigma_floor_m > 0.0)) {
+    Fail("tracking.measurement_sigma_floor_m must be > 0");
+  }
+  if (!(tracking.initial_rate_variance > 0.0)) {
+    Fail("tracking.initial_rate_variance must be > 0");
+  }
   if (tracking.confirm_hits < 1) Fail("tracking.confirm_hits must be >= 1");
   if (tracking.delete_misses < 1) Fail("tracking.delete_misses must be >= 1");
   if (!(tracking.max_coast_s > 0.0)) Fail("tracking.max_coast_s must be > 0");
@@ -695,6 +731,39 @@ void PerceptionConfig::Validate() const {
   // produce; a ceiling below the detector's cap would silently shrink large obstacles.
   if (!(safety.max_radius_m >= detection.max_circle_radius_m)) {
     Fail("safety.max_radius_m must be >= detection.max_circle_radius_m");
+  }
+
+  // ============================================================================
+  // THE SHORT-ARC BIAS BUDGET - a cross-STAGE safety constraint, added at P10.
+  // ============================================================================
+  // P8 measured the DE-ENLARGED fitted radius (`radius_fitted_m - radius_enlargement_m`,
+  // upstream's `true_radius`) to be biased SMALL on short arcs by up to 0.161 m, and P9
+  // measured the Kalman filter carrying that bias through to 0.169 m at the safety stage's
+  // input. Under-estimating a radius is the one unrecoverable error in the subsystem.
+  //
+  // Only two configured terms cover that bias. `detection.radius_enlargement_m` adds a flat
+  // margin to every fitted radius before it ever reaches the tracker, and
+  // `safety.radius_inflation_fixed_m` adds one after. The stochastic term
+  // `radius_inflation_k_sigma * sigma_r` does NOT: a systematic bias is invisible to the
+  // filter's own covariance, and the P10 sweep measured containment falling to 93.9% - well
+  // under the 99.9% target - on a corpus where the enlargement is absent and only k_sigma is
+  // left to cover it.
+  //
+  // The shipped configuration satisfies this with 0.25 + 0.05 = 0.30 m against a 0.20 m
+  // requirement. What the constraint exists to stop is somebody zeroing the ENLARGEMENT - a
+  // detection-side knob whose safety consequence is entirely at the other end of the pipeline
+  // - and silently losing containment. Turning it down is still allowed; turning it down
+  // without raising the safety-side term is not.
+  //
+  // 0.20 m is P9's 0.169 m worst case rounded up to the nearest 0.05 m, and it is validated by
+  // the P10 sweep rather than asserted: at the shipped k_sigma the enlargement-free corpus
+  // reaches 99.9% containment once the two terms sum to 0.20 m.
+  constexpr double kMeasuredShortArcRadiusBiasM = 0.20;
+  if (!(detection.radius_enlargement_m + safety.radius_inflation_fixed_m >=
+        kMeasuredShortArcRadiusBiasM)) {
+    Fail("detection.radius_enlargement_m + safety.radius_inflation_fixed_m must be >= 0.20 m, "
+         "the measured worst-case short-arc radius under-estimate (P8 finding 2, P9 through "
+         "the filter); no other configured term covers a systematic bias");
   }
 
   // Confirming a track takes confirm_hits scans, so a min_track_age shorter than that
