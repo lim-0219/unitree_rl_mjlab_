@@ -1,0 +1,72 @@
+
+# Consider dependencies only in project.
+set(CMAKE_DEPENDS_IN_PROJECT_ONLY OFF)
+
+# The set of languages for which implicit dependencies are needed:
+set(CMAKE_DEPENDS_LANGUAGES
+  )
+
+# The set of dependency files which are needed:
+set(CMAKE_DEPENDS_DEPENDENCY_FILES
+  "/home/kwan/unitree_rl_mjlab_/simulate/mujoco/simulate/glfw_adapter.cc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/glfw_adapter.cc.o" "gcc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/glfw_adapter.cc.o.d"
+  "/home/kwan/unitree_rl_mjlab_/simulate/mujoco/simulate/glfw_dispatch.cc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/glfw_dispatch.cc.o" "gcc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/glfw_dispatch.cc.o.d"
+  "/home/kwan/unitree_rl_mjlab_/simulate/mujoco/simulate/platform_ui_adapter.cc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/platform_ui_adapter.cc.o" "gcc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/platform_ui_adapter.cc.o.d"
+  "/home/kwan/unitree_rl_mjlab_/simulate/mujoco/simulate/simulate.cc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/simulate.cc.o" "gcc" "CMakeFiles/unitree_mujoco.dir/mujoco/simulate/simulate.cc.o.d"
+  "/home/kwan/unitree_rl_mjlab_/simulate/src/joystick/joystick.cc" "CMakeFiles/unitree_mujoco.dir/src/joystick/joystick.cc.o" "gcc" "CMakeFiles/unitree_mujoco.dir/src/joystick/joystick.cc.o.d"
+  "/home/kwan/unitree_rl_mjlab_/simulate/src/lodepng/lodepng.cpp" "CMakeFiles/unitree_mujoco.dir/src/lodepng/lodepng.cpp.o" "gcc" "CMakeFiles/unitree_mujoco.dir/src/lodepng/lodepng.cpp.o.d"
+  "/home/kwan/unitree_rl_mjlab_/simulate/src/main.cc" "CMakeFiles/unitree_mujoco.dir/src/main.cc.o" "gcc" "CMakeFiles/unitree_mujoco.dir/src/main.cc.o.d"
+  )
+
+# Targets to which this target links.
+set(CMAKE_TARGET_LINKED_INFO_FILES
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/dpcbf/CMakeFiles/dpcbf_dynamic_obstacles.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/dpcbf/CMakeFiles/dpcbf_safety_filter.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/dpcbf/CMakeFiles/dpcbf_visualizer.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-cpp-build/CMakeFiles/osqp-cpp.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/status/CMakeFiles/absl_statusor.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/status/CMakeFiles/absl_status.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_cord.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_cordz_info.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_cord_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/hash/CMakeFiles/absl_hash.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/hash/CMakeFiles/absl_city.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_cordz_functions.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/profiling/CMakeFiles/absl_exponential_biased.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_cordz_handle.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/synchronization/CMakeFiles/absl_synchronization.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/synchronization/CMakeFiles/absl_graphcycles_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/synchronization/CMakeFiles/absl_kernel_timeout_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_tracing_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/time/CMakeFiles/absl_time.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/time/CMakeFiles/absl_civil_time.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/time/CMakeFiles/absl_time_zone.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/crc/CMakeFiles/absl_crc_cord_state.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/crc/CMakeFiles/absl_crc32c.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/crc/CMakeFiles/absl_crc_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_base_cpu_detect.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_leak_check.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_stacktrace.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_strerror.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_symbolize.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_debugging_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_malloc_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_demangle_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_demangle_rust.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_decode_rust_punycode.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/debugging/CMakeFiles/absl_utf8_for_code_point.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_str_format_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_strings.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/types/CMakeFiles/absl_source_location.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/strings/CMakeFiles/absl_strings_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/numeric/CMakeFiles/absl_int128.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_base.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_spinlock_wait.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_hardening.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_throw_delegate.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_raw_logging_internal.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/abseil-cpp-build/absl/base/CMakeFiles/absl_log_severity.dir/DependInfo.cmake"
+  "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-build/CMakeFiles/osqpstatic.dir/DependInfo.cmake"
+  )
+
+# Fortran module output directory.
+set(CMAKE_Fortran_TARGET_MODULE_DIR "")

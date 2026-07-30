@@ -1,0 +1,1 @@
+/usr/bin/cc -fPIC  -O3 -O3 -O3 -DNDEBUG -shared -Wl,-soname,libqdldl.so -o out/libqdldl.so CMakeFiles/qdldl.dir/src/qdldl.c.o   -L/home/kwan/unitree_rl_mjlab_/simulate/mujoco/lib   -lm -lrt -ldl 

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libabsl_status_builder.a CMakeFiles/absl_status_builder.dir/status_builder.cc.o
+/usr/bin/ranlib libabsl_status_builder.a

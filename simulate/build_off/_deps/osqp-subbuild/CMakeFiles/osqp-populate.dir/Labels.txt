@@ -1,0 +1,13 @@
+# Target labels
+ osqp-populate
+# Source files and their labels
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/CMakeFiles/osqp-populate
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/CMakeFiles/osqp-populate.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/CMakeFiles/osqp-populate-complete.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-build.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-configure.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-download.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-install.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-mkdir.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-patch.rule
+/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-test.rule

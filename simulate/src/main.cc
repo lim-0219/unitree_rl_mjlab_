@@ -41,6 +41,14 @@
 #include "dpcbf/dpcbf_safety_filter.h"
 #include "dpcbf/dpcbf_visualizer.h"
 
+// PERCEPTION HOOK 0/5 - optional subsystem. PERCEPTION_ENABLED comes from the
+// perception_integration target, which only exists when PERCEPTION_ENABLE=ON. With it OFF,
+// every hook region below compiles away to nothing.
+#ifdef PERCEPTION_ENABLED
+#include "perception/integration/mid360_bringup.h"
+#include "perception/integration/obstacle_source_selector.h"
+#endif
+
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 #define NUM_MOTOR_IDL_GO 20
 
@@ -109,6 +117,79 @@ namespace
   dpcbf::DynamicObstacleManager dynamic_obstacles;
   dpcbf::DpcbfSafetyFilter safety_filter;
   dpcbf::DpcbfVisualizer dpcbf_visualizer;
+
+  // PERCEPTION HOOK 1/5 - the single facade the application constructs.
+#ifdef PERCEPTION_ENABLED
+  perception::integration::Mid360BringUp perception_mid360;
+
+  // Decides what DPCBF is fed. In the shipped `oracle` mode it wraps exactly the
+  // DynamicObstacleManager::Snapshot() conversion that used to live inline in the axis-filter
+  // lambda below (HOOK 5/5) - same obstacles, same order, same numbers, proven bit-for-bit by
+  // perception_oracle_equivalence_test against fixtures captured from the pre-change code.
+  //
+  // Deliberately independent of perception_mid360: the oracle source needs no LiDAR, no
+  // mjModel and no scan, so `perception.enabled: false` or an unbindable sensor must not
+  // disturb the obstacle path. It is also runner-less and thread-less - it runs synchronously
+  // on whatever thread calls it, which for now is only the bridge thread.
+  perception::integration::ObstacleSourceSelector perception_obstacle_source;
+
+  // Rebinds perception to a freshly loaded (model, data) pair and cross-checks the
+  // compiled MJCF <site> against perception.lidar. Called at each of the three model-load
+  // sites, mirroring dynamic_obstacles.BindModel.
+  //
+  // The extrinsic disagreement is a HARD FAILURE by design: the closed loop drives the
+  // sensor from the MJCF site while config, tests and any headless harness compose it from
+  // the YAML, and nothing structural keeps the two in step. Continuing past a mismatch
+  // means shipping quietly wrong perception, so the process exits non-zero instead.
+  void RebindPerception(mj::Simulate &sim)
+  {
+    if (m == nullptr || d == nullptr)
+    {
+      return;
+    }
+
+    // The obstacle source first, and outside the `enabled()` gate above: it is bound to the
+    // DynamicObstacleManager at startup (HOOK 4/5) and needs the model only to resolve the
+    // robot base body for its ground-truth pose leg. That leg is diagnostic - nothing on the
+    // live filter path reads it - so a failure here is reported and survived rather than
+    // fatal, unlike the extrinsic guard below. The obstacle states DPCBF actually consumes do
+    // not depend on it and keep flowing.
+    if (perception_obstacle_source.bound())
+    {
+      std::string obstacle_error;
+      if (!perception_obstacle_source.BindModel(m, obstacle_error))
+      {
+        std::cerr << "[perception] oracle robot-pose binding unavailable: " << obstacle_error
+                  << std::endl;
+      }
+    }
+
+    if (!perception_mid360.enabled())
+    {
+      return;
+    }
+
+    std::string message;
+    if (!perception_mid360.VerifyExtrinsic(m, message))
+    {
+      std::cerr << message << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    std::cout << "[perception] " << message << std::endl;
+
+    // The viewer reads user_scn from the render thread, so swap it under sim.mtx.
+    const std::unique_lock<std::recursive_mutex> lock(sim.mtx);
+    sim.user_scn = nullptr;
+    std::string error;
+    if (!perception_mid360.BindModel(m, d, error))
+    {
+      std::cerr << "FATAL: perception bind failed: " << error << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    sim.user_scn = perception_mid360.overlay_scene();
+    perception_mid360.StartLiveView();
+  }
+#endif
 
   // control noise variables
   mjtNum *ctrlnoise = nullptr;
@@ -420,6 +501,11 @@ namespace
           dynamic_obstacles.BindModel(m, d);
           mj_forward(m, d);
 
+          // PERCEPTION HOOK 2/5 - model-load site 1 of 3 (drag-and-drop load).
+#ifdef PERCEPTION_ENABLED
+          RebindPerception(sim);
+#endif
+
           // allocate ctrlnoise
           free(ctrlnoise);
           ctrlnoise = (mjtNum *)malloc(sizeof(mjtNum) * m->nu);
@@ -450,6 +536,11 @@ namespace
           d = dnew;
           dynamic_obstacles.BindModel(m, d);
           mj_forward(m, d);
+
+          // PERCEPTION HOOK 2/5 - model-load site 2 of 3 (UI reload).
+#ifdef PERCEPTION_ENABLED
+          RebindPerception(sim);
+#endif
 
           // allocate ctrlnoise
           free(ctrlnoise);
@@ -594,6 +685,28 @@ namespace
             mj_forward(m, d);
             sim.speed_changed = true;
           }
+
+          // PERCEPTION HOOK 3/5 - the ray-sampling call.
+          //
+          // Deliberately here and nowhere else: this is inside the physics loop's existing
+          // sim.mtx critical section, which is the only place a consistent mjData exists,
+          // and it is after stepping so the scan sees the post-step world. One call covers
+          // both the re-sync and the in-sync stepping branches. When the viewer is paused
+          // sim time is frozen, so `force` re-scans on a wall-clock cadence instead, which
+          // keeps the live overlay responsive while dragging bodies around.
+          //
+          // KNOWN ONE-TIMESTEP PHASE OFFSET. After mj_step, d->xpos / d->site_xpos still
+          // describe the pre-integration state while d->time has already advanced, and the
+          // running branch above does not call mj_forward (only the paused branch does). The
+          // scan geometry therefore lags its own timestamp by one timestep - measured at
+          // 4.7 mm while falling at 2.4 m/s by perception_mid360_pose_tracking_test (V6c).
+          // Left as-is deliberately: the right fix is to record the true acquisition time,
+          // which is the deskew phase's job, not to force a kinematics refresh from the
+          // perception path. It is ~50x smaller than the 100 ms scan window deskew must
+          // handle regardless.
+#ifdef PERCEPTION_ENABLED
+          perception_mid360.MaybeScan(d->time, /*force=*/!sim.run);
+#endif
         }
       } // release std::lock_guard<std::mutex>
     }
@@ -616,6 +729,11 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
       sim->Load(m, d, filename);
       dynamic_obstacles.BindModel(m, d);
       mj_forward(m, d);
+
+      // PERCEPTION HOOK 2/5 - model-load site 3 of 3 (initial startup load).
+#ifdef PERCEPTION_ENABLED
+      RebindPerception(*sim);
+#endif
 
       // allocate ctrlnoise
       free(ctrlnoise);
@@ -683,7 +801,32 @@ void *UnitreeSdk2BridgeThread(void *arg)
     desired.yaw_rate = AxisToCommand(-rx, safety_filter.yaw_rate_min(),
                                      safety_filter.yaw_rate_max());
 
+    // PERCEPTION HOOK 5/5 - the obstacle source.
+    //
+    // This is the sole DPCBF input site, which is why the hook has to be in the lambda body
+    // itself: a lambda cannot be interposed from outside. In the shipped `oracle` mode the
+    // call below is the identical conversion that used to be written out here - the same
+    // Snapshot(), the same field copies, the same index-derived ids, the same order, the same
+    // complete and uncapped list - relocated into ObstacleSourceSelector so the choice of
+    // source is explicit and testable. perception_oracle_equivalence_test proves the
+    // equivalence bit-for-bit, through the real DpcbfSafetyFilter, against fixtures captured
+    // from this code before it moved.
+    //
+    // The #else branch is not a fallback, it is the original text: with PERCEPTION_ENABLE=OFF
+    // the whole subsystem compiles away and the binary must stay byte-identical to a
+    // repository that never had perception in it. It is also the rollback - deleting the
+    // #ifdef arm restores the pre-phase lambda exactly.
+    //
+    // NOTE that ReadRobotGroundTruth below is deliberately NOT routed through the selector,
+    // even though OracleProviderMj can produce the same pose. Moving it would add a second
+    // mjData read on the bridge thread to a phase whose entire promise is "nothing changes",
+    // for no benefit: the selector's robot-pose leg exists for the P11 evaluator, not for the
+    // live filter. It also keeps this phase clear of the pre-existing, documented m/d race
+    // between this thread and the physics thread - perception adds no reads here.
     std::vector<dpcbf::ObstacleState> obstacle_states;
+#ifdef PERCEPTION_ENABLED
+    obstacle_states = perception_obstacle_source.GetObstacleStates(d->time);
+#else
     const auto obstacle_snapshot = dynamic_obstacles.Snapshot();
     obstacle_states.reserve(obstacle_snapshot.size());
     for (std::size_t obstacle_id = 0; obstacle_id < obstacle_snapshot.size();
@@ -693,6 +836,7 @@ void *UnitreeSdk2BridgeThread(void *arg)
                                  obstacle.velocity[0], obstacle.velocity[1],
                                  static_cast<int>(obstacle_id)});
     }
+#endif
     const dpcbf::RobotState robot = ReadRobotGroundTruth(m, d, dpcbf_body_id);
     const auto filtered = safety_filter.Filter(robot, desired, obstacle_states);
     dpcbf_visualizer.Update(robot, obstacle_states, filtered);
@@ -798,6 +942,37 @@ int main(int argc, char **argv)
     std::cerr << "Failed to load dynamic obstacle configuration: " << error.what() << '\n';
     return EXIT_FAILURE;
   }
+
+  // PERCEPTION HOOK 4/5 - configuration. Its own file, so the perception schema never
+  // leaks into dpcbf_config.yaml and dpcbf/ keeps taking zero edits.
+#ifdef PERCEPTION_ENABLED
+  try {
+    perception_mid360.LoadConfig(proj_dir.parent_path() / "perception/configs/perception.yaml");
+  } catch (const std::exception& error) {
+    std::cerr << "Failed to load perception configuration: " << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
+
+  // Bind the obstacle source here, on the main thread, before either the bridge or the physics
+  // thread starts. Two reasons it is here and not at model-load time:
+  //   - In oracle mode it needs no mjModel. DynamicObstacleManager fills its obstacle list in
+  //     AddToSpec, before compile, so Snapshot() is already meaningful. Binding now means the
+  //     axis-filter lambda can never race a half-bound selector, whatever order the threads
+  //     come up in.
+  //   - An unimplemented mode must stop the process at startup, next to the config that
+  //     selected it, rather than throwing out of a filter callback mid-run.
+  {
+    std::string error;
+    if (!perception_obstacle_source.Bind(perception_mid360.config(), &dynamic_obstacles,
+                                         error)) {
+      std::cerr << "Failed to bind the perception obstacle source: " << error << '\n';
+      return EXIT_FAILURE;
+    }
+    std::cout << "[perception] obstacle source: "
+              << perception::integration::ToString(perception_obstacle_source.mode()) << '\n';
+  }
+#endif
+
   param::helper(argc, argv);
   if(param::config.robot_scene.is_relative()) {
     param::config.robot_scene = proj_dir.parent_path() / param::config.robot_scene;

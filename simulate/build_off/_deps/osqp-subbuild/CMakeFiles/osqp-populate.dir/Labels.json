@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/CMakeFiles/osqp-populate"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/CMakeFiles/osqp-populate.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/CMakeFiles/osqp-populate-complete.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-build.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-configure.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-download.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-install.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-mkdir.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-patch.rule"
+		},
+		{
+			"file" : "/home/kwan/unitree_rl_mjlab_/simulate/build_off/_deps/osqp-subbuild/osqp-populate-prefix/src/osqp-populate-stamp/osqp-populate-test.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"osqp-populate"
+		],
+		"name" : "osqp-populate"
+	}
+}

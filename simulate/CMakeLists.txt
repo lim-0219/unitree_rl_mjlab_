@@ -30,6 +30,17 @@ if(NOT TARGET dpcbf_visualizer)
   message(FATAL_ERROR "OpenCV (core, imgproc, highgui) is required for the DPCBF visualization window")
 endif()
 
+# DPCBF perception subsystem. Optional and self-contained: with PERCEPTION_ENABLE=OFF this
+# block does nothing, `perception_integration` never exists, PERCEPTION_ENABLED is never
+# defined, and the hook regions in src/main.cc compile away to nothing - unitree_mujoco is
+# byte-for-byte what it was. See perception/docs/architecture.md.
+# Added before the directory-level link_libraries() below so perception targets do not
+# silently inherit glfw/unitree_sdk2/etc, exactly as the dpcbf subdirectory does not.
+option(PERCEPTION_ENABLE "Build the DPCBF perception subsystem" ON)
+if(PERCEPTION_ENABLE)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../perception ${CMAKE_BINARY_DIR}/perception)
+endif()
+
 file(GLOB SIM_SRC
   src/joystick/joystick.cc
 
@@ -56,5 +67,9 @@ target_link_libraries(unitree_mujoco PRIVATE
   dpcbf_safety_filter
   dpcbf_visualizer
 )
+if(TARGET perception_integration)
+  # Carries PERCEPTION_ENABLED=1, which is what enables the hook regions in src/main.cc.
+  target_link_libraries(unitree_mujoco PRIVATE perception_integration)
+endif()
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

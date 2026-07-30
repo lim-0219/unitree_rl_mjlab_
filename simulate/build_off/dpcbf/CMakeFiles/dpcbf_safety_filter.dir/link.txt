@@ -1,0 +1,2 @@
+/usr/bin/ar qc libdpcbf_safety_filter.a CMakeFiles/dpcbf_safety_filter.dir/src/dpcbf_safety_filter.cpp.o
+/usr/bin/ranlib libdpcbf_safety_filter.a

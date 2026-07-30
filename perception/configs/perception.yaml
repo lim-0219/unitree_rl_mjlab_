@@ -1,0 +1,525 @@
+# DPCBF perception subsystem configuration.
+#
+# Loaded once at startup into an immutable PerceptionConfig struct tree
+# (perception/src/integration/perception_config.cpp). Unknown keys are REJECTED with a
+# hard error - a silently-ignored typo in an extrinsic is exactly the failure this
+# subsystem cannot afford.
+#
+# SCOPE. The WHOLE tree is declared here, including sections whose consuming module does
+# not exist yet (segmentation, detection, tracking, dpcbf_adapter, mode, ros2, ...). That
+# is deliberate: freezing the schema once means a later phase reads an already-typed,
+# already-validated field instead of amending the loader every time, and it means the
+# cross-section constraints are checked in one place from the first day.
+#
+# PROVENANCE. Values fall into three clearly-marked classes:
+#   * SOURCED     - transcribed from a primary document (the Mid-360 block below).
+#   * UPSTREAM    - transcribed from the audited obstacle_detector defaults, so the ported
+#                   detector and its regression oracle can be tuned with the same numbers.
+#   * JUDGEMENT   - this repository's own default, with the evidence that should replace it
+#                   named in the comment. None of these is a fitted or measured number and
+#                   none should be quoted as one.
+# The two governing documents for the SOURCED class are:
+#   * g1_mid360_extrinsic.md     - the mount. AUTHORITATIVE where the two disagree.
+#   * g1_mid360_sensor_model.md  - the sensor model and the aperture / exact-raycast
+#                                  findings.
+
+perception:
+  schema_version: 1
+  enabled: true
+
+  # Master run seed. `lidar.sensor.seed` is the raycaster's own copy and defaults to this
+  # value; setting BOTH to different values is a hard error, so a determinism claim can
+  # never rest on two seeds that quietly disagree.
+  seed: 42
+
+  lidar:
+    # ---------------------------------------------------------------------------------
+    # EXTRINSIC - Livox Mid-360 mount on the Unitree G1.
+    #
+    # Transcribed verbatim from the `mid360_joint` fixed joint in Unitree's own
+    # g1_description URDFs (16 up-to-date `rev_1_0` / `mode_*` variants agree to the last
+    # digit; the 5 that disagree are the ones Unitree's own README marks Deprecated).
+    # Source: g1_mid360_extrinsic.md sections 3.1 / 5.1 / 5.2 / 6.
+    #
+    # Corroborated independently by: Unitree CAD packaging (the flipped mounting base
+    # lands 11.1 mm below the head crown, and right-side-up it would NOT fit), by two
+    # community FAST-LIO deployments on this robot that required roll = 180 deg, and by
+    # the resulting 1.2654 m sensor height against Unitree's published 1.320 m standing
+    # height (model crown 1.3236 m, +3.6 mm).
+    #
+    # CRITICAL - roll = pi means the sensor is mounted UPSIDE DOWN. Its +Z axis points
+    # DOWN and its +Y axis points to the robot's RIGHT, in `torso_link`. This is correct
+    # and deliberate. Do not "fix" it.
+    #
+    # The parent is `torso_link`, which sits behind three revolute waist joints
+    # (yaw/roll/pitch) relative to `pelvis`. The extrinsic is ONLY valid relative to
+    # `torso_link`; there is no `base_link` in the G1 URDF and composing against `pelvis`
+    # would be pose-dependent and wrong.
+    #
+    # These values are cross-checked against the MJCF <site> of the same name at every
+    # model load by VerifyLidarExtrinsic(); the process exits non-zero on disagreement.
+    # Equivalent quaternion (w x y z): 0 0.999673352 0 -0.025557564
+    # ---------------------------------------------------------------------------------
+    extrinsic:
+      parent_body: "torso_link"
+      site_name: "lidar_mid360"
+      translation_xyz_m: [0.0002835, 0.00003, 0.428434]
+      rotation_rpy_rad: [3.141592653589793, 0.05112069379091391, 0.0]
+
+    # ---------------------------------------------------------------------------------
+    # SENSOR MODEL - Livox Mid-360 published specification.
+    # Source: Livox Mid-360 User Manual v1.0 p.20, via g1_mid360_extrinsic.md section 3.2.
+    # ---------------------------------------------------------------------------------
+    sensor:
+      # SENSOR-FRAME vertical FOV, exactly as published. Do NOT manually negate these.
+      # The roll = pi above already performs the flip; negating here as well would
+      # double-invert and silently point the sensor back at the sky. In the robot frame
+      # this coverage becomes +4.071 deg ... -54.929 deg, i.e. it sweeps the ground ahead
+      # of the robot, which is what makes the sensor useful on a humanoid.
+      # Source: g1_mid360_extrinsic.md section 6.3.
+      vertical_fov_deg: [-7.0, 52.0]
+      horizontal_fov_deg: 360.0
+
+      # APPROXIMATION, stated plainly. This is a uniform azimuth x elevation grid:
+      #   360 x 32 = 11520 rays/frame.
+      # The real Mid-360 is a NON-REPETITIVE ROSETTE at 200000 pts/s, i.e. ~20000
+      # points/frame at 10 Hz, with a pattern that does not repeat between frames.
+      # Coverage statistics therefore differ from hardware. The rest of the pipeline is
+      # pattern-agnostic, so raising fidelity later is a change to the generator alone.
+      # Source: g1_mid360_extrinsic.md section 7.5, g1_mid360_sensor_model.md section 7.4.
+      azimuth_rays: 360
+      elevation_rays: 32
+
+      min_range_m: 0.10      # Close-proximity blind zone, manual p.20.
+      scan_rate_hz: 10.0     # Frame rate, manual p.20.
+
+      # NOT from either source document. The manual quotes detection range by target
+      # reflectivity rather than one max range, so this is an implementation-side far
+      # cutoff and an OPEN tunable, not a citation.
+      max_range_m: 40.0
+
+      # Distance random error, 1 sigma at 10 m, manual p.20. Implemented and seeded, but
+      # OFF by default: the Phase-4 acceptance gate is "hit-distance error <= 1e-6 m vs
+      # analytic", which requires a noise-free sensor. Turn on for fidelity studies.
+      range_noise_std_m: 0.02
+      apply_range_noise: false
+      seed: 42
+
+      # Angular random error, 1 sigma, manual p.20. Recorded for completeness and
+      # deliberately NOT MODELLED. Carried forward as an open item.
+      angular_noise_deg_1sigma: 0.15
+
+      # Livox body size, manual p.19-20. For packaging/collision sanity checks only.
+      body_size_mm: [65.0, 65.0, 60.0]
+
+    # ---------------------------------------------------------------------------------
+    # OPTICAL APERTURE.
+    #
+    # `head_link.STL` is a closed opaque envelope with NO modelled window, and at the
+    # extrinsic above the sensor origin sits INSIDE it. A naive raycast therefore
+    # self-terminates on ~100% of rays and delivers ZERO usable points. Note that a
+    # post-hoc self-filter cannot repair this: the failure mode is occlusion, and
+    # deleting a point does not recover the measurement it destroyed.
+    #
+    # The fix: the two `head_link` geoms carry group="2" in scene_g1.xml, and the ray
+    # caster excludes that group through the documented `geomgroup` mask of
+    # mj_ray / mj_multiRay. Dynamics-neutral (`group` is a visualization/ray-filtering
+    # attribute; contype, conaffinity, density, mass and inertia are untouched) and
+    # per-geom, so a documented aperture shape can later be dropped in by splitting
+    # `head_link` and re-grouping, with no code change.
+    #
+    # ASSUMPTION CARRIED FORWARD: this treats the WHOLE head as transparent, which
+    # over-permits wherever the real shell is opaque. No source found describes the real
+    # aperture's shape. The supporting claim is Unitree's advertised 360 x 59 deg FOV for
+    # the integrated sensor plus Livox's requirement that the FOV not be blocked
+    # "including glass".
+    #
+    # Set to -1 to disable the mask and reproduce the pre-aperture 100%-self-hit
+    # behaviour, which is how the before/after evidence is produced.
+    # Source: g1_mid360_sensor_model.md sections 2.1 / 3 / 4.1 / 7.1.
+    # ---------------------------------------------------------------------------------
+    aperture:
+      transparent_geom_group: 2
+
+    # ---------------------------------------------------------------------------------
+    # RAY CASTING.
+    #
+    # `exact: true` casts every ray with mj_ray instead of batching through mj_multiRay.
+    # This is a CORRECTNESS setting, not a preference. mj_multiRay prunes candidate geoms
+    # using a per-geom angular bound computed from the 8 AABB corners; that is not a
+    # valid outer bound for a geom subtending a large solid angle, because the extreme
+    # bearing over a large flat face occurs on an EDGE rather than a vertex. Rays through
+    # the centre of a big face therefore fall outside the corner-derived bound and the
+    # geom is skipped entirely - measured at up to 23.7% of wall rays flying straight
+    # through an opaque wall. The error is always a MISSED OCCLUSION, never a wrong range
+    # on a ray that does resolve. mj_ray scans every geom and has no such approximation.
+    #
+    # `false` exists only as a documented performance fallback (~1.8x faster) and must
+    # never be the default.
+    # Source: g1_mid360_sensor_model.md section 4.2.
+    # ---------------------------------------------------------------------------------
+    raycast:
+      exact: true
+
+    # ---------------------------------------------------------------------------------
+    # DEFENSIVE SELF FILTER. The aperture mask handles the head; this rejects returns
+    # from anywhere else on the robot by body ancestry from the kinematic root. The arms,
+    # torso and legs MUST keep occluding - that asymmetry (arms block, own housing does
+    # not) is what the V4 check verifies.
+    # ---------------------------------------------------------------------------------
+    self_filter:
+      robot_root_body: "pelvis"   # The G1 URDF's kinematic root; there is no base_link.
+      reject_self_hits: true
+
+  # -----------------------------------------------------------------------------------
+  # LIVE VISUALIZATION.
+  #
+  # `enabled` controls the OpenCV live window - a top-down XY view plus an
+  # azimuth x elevation range image, drawn on its own thread from COPIES of each scan
+  # (the same pattern DpcbfVisualizer already uses). This is the working live view.
+  #
+  # `viewer_overlay` controls drawing ray lines and hit markers directly into the MuJoCo
+  # viewer's 3D scene. It is OFF by default and NOT because it is untested: MuJoCo
+  # 3.3.6's `simulate` app only appends `user_scn` geoms into the render scene in PASSIVE
+  # mode (see the `else if (m_passive_ && d_passive_)` branch in simulate.cc), and this
+  # application constructs Simulate with `is_passive_ = false`. The overlay would build
+  # geoms that are silently discarded. perception/docs/architecture.md records the exact
+  # vendored patch that would make it work, which is deliberately NOT applied.
+  # -----------------------------------------------------------------------------------
+  visualization:
+    enabled: true                # OpenCV live scan window.
+    viewer_overlay: false        # MuJoCo 3D overlay; inert in managed mode - see above.
+
+    # Overlay-only knobs (no effect while viewer_overlay is false).
+    draw_points: true
+    draw_rays: true
+    draw_sensor_frame: true      # Origin marker + sensor axes, so the flip is visible.
+    point_stride: 3              # Draw every Nth accepted return.
+    ray_stride: 128              # Draw every Nth ray line.
+    point_size_m: 0.015
+    ray_width_px: 1.0            # mjGEOM_LINE width is in pixels, not metres.
+    point_rgba: [1.0, 0.35, 0.0, 0.95]
+    ray_rgba: [0.15, 0.85, 1.0, 0.18]
+
+    refresh_hz: 10.0             # Live-window redraw rate; also paces re-scans when the
+                                 # simulator is paused and sim time is frozen.
+
+  # =====================================================================================
+  # PIPELINE SECTIONS.
+  #
+  # Everything below was frozen in the contract/config phase. Most of these modules do not
+  # exist yet; the schema does, and it is validated on every load.
+  #
+  # A note on FRAMES, because two different "base" bodies appear in this file and mixing
+  # them up is the single most likely way to get plausible-looking wrong geometry:
+  #   * lidar.extrinsic.parent_body = torso_link - the sensor's kinematic parent. The
+  #     extrinsic is ONLY valid against this body.
+  #   * frames.base_body            = pelvis     - what DPCBF and the ground-truth reader
+  #     call the robot. Matches dpcbf/config/dpcbf_config.yaml `robot.base_body`.
+  # Both are correct. They are different bodies, separated by three waist joints.
+  #
+  # All z coordinates in self_filter / segmentation / projection are in the GRAVITY-ALIGNED
+  # BASE frame, whose origin is torso_link. Under the neutral standing pose torso_link sits
+  # at world z = 0.837 m, so THE FLOOR IS AT z = -0.837 m, not z = 0.
+  # =====================================================================================
+
+  # -------------------------------------------------------------------------------------
+  # FRAMES - frame provider ownership.
+  # -------------------------------------------------------------------------------------
+  frames:
+    base_body: "pelvis"          # SOURCED: dpcbf_config.yaml robot.base_body.
+    world_frame_name: "world"
+
+    # JUDGEMENT. The physics step here is 0.002 s, so 512 snapshots span ~1.02 s - ten scan
+    # periods of pose history. That is what lets a late-arriving scan still be deskewed
+    # instead of being dropped for want of a pose.
+    snapshot_ring_capacity: 512
+
+  # -------------------------------------------------------------------------------------
+  # MOTION COMPENSATION - deskew and gravity alignment.
+  # -------------------------------------------------------------------------------------
+  motion_compensation:
+    deskew_enabled: true
+    gravity_align_enabled: true
+
+    # "linear" interpolates between the two bracketing pose snapshots. "nearest" exists as
+    # the ablation baseline that quantifies what deskew actually buys.
+    interpolation: "linear"
+
+    # JUDGEMENT. Ten physics steps. Past that the constant-velocity assumption between two
+    # snapshots stops being a small correction. Must be <= the sensor frame period.
+    max_snapshot_gap_s: 0.02
+
+    # JUDGEMENT, but a specific one: about one physics step. This is the budget that
+    # absorbs the known one-physics-step scan/kinematics lag (~4.7 mm at fall speed,
+    # documented during the pose-tracking follow-up) rather than letting deskew extrapolate
+    # freely past the newest snapshot.
+    max_extrapolation_s: 0.005
+
+    # Fail the whole frame when the snapshot ring does not span the scan window, instead of
+    # deskewing part of it and reporting success. The fault-injection tests depend on this
+    # being an explicit, configurable choice.
+    require_full_window: true
+
+  # -------------------------------------------------------------------------------------
+  # SELF FILTER - the CORE pipeline stage.
+  #
+  # Distinct from lidar.self_filter above, which rejects returns by MuJoCo body ancestry at
+  # the raycaster. This one is purely geometric and is the only self rejection that
+  # survives a swap to real hardware, where no body ids exist.
+  # -------------------------------------------------------------------------------------
+  self_filter:
+    enabled: true
+    radius_m: 0.45               # JUDGEMENT: clears the G1's arms in a neutral stance.
+    z_min_m: -1.00               # Just below the feet (floor is at -0.837 m).
+    z_max_m: 0.50                # Just above the head crown (+0.487 m from torso_link).
+
+  # -------------------------------------------------------------------------------------
+  # GROUND SEGMENTATION.
+  #
+  # `travel` is accepted by the schema but additionally requires PERCEPTION_WITH_TRAVEL at
+  # build time. The arena is flat, so the z-band is expected to be sufficient and TRAVEL is
+  # genuinely optional.
+  # -------------------------------------------------------------------------------------
+  segmentation:
+    backend: "zband"             # "zband" | "travel"
+    zband:
+      # JUDGEMENT. The floor sits at -0.837 m, so -0.75 m leaves ~9 cm of margin for torso
+      # pitch and for the deskew residual. Must be <= projection.height_band_min_m.
+      max_ground_height_m: -0.75
+      band_tolerance_m: 0.08     # Half-width of the transition band around the threshold.
+
+      refine_with_plane: false   # Single-plane RANSAC over the candidate ground points.
+      plane_ransac_distance_m: 0.05
+      plane_ransac_iterations: 128
+
+      # Reject a refined plane tilted more than this: the arena is flat, so a steep
+      # "ground" plane means the fit locked onto a wall.
+      max_slope_deg: 10.0
+
+  # -------------------------------------------------------------------------------------
+  # SCAN PROJECTION - the ported pointcloud_to_laserscan core.
+  # -------------------------------------------------------------------------------------
+  projection:
+    bins: 360                    # 1 degree. The bin-count sweep is a planned ablation.
+
+    range_min_m: 0.10            # Must be >= sensor.min_range_m.
+
+    # JUDGEMENT. DPCBF only considers obstacles inside robot.p_max = 3.0 m
+    # (dpcbf_config.yaml), so 10 m is already a 3x margin. Keeping the scan short bounds
+    # both the detector's work and its false-positive surface, and it is far inside the
+    # sensor's own 40 m cutoff.
+    range_max_m: 10.0
+
+    # The slab collapsed into the 2-D scan. The lower edge sits ABOVE
+    # segmentation.zband.max_ground_height_m on purpose: the height band and the ground
+    # label are a deliberate double gate against ground contamination.
+    height_band_min_m: -0.70
+    height_band_max_m: 0.20
+
+    # Fills ProjectedScan::bin_point_counts. Cheap, and it is the only source for the
+    # information-loss metric the projection acceptance gate asks for.
+    collect_bin_histogram: true
+
+  # -------------------------------------------------------------------------------------
+  # DETECTION - the ported obstacle_extractor.
+  #
+  # Parameter NAMES are upstream's on purpose, so the port and its Armadillo-based
+  # regression oracle can be driven with one set of numbers.
+  # -------------------------------------------------------------------------------------
+  detection:
+    min_group_points: 5          # UPSTREAM.
+    max_group_distance_m: 0.10   # UPSTREAM.
+
+    # DERIVED, not listed here on purpose. Upstream's default is 0.00628, the per-beam arc
+    # length at unit range for a ~1000-beam scan. This is a 360-bin scan, so the matched
+    # value is 2*pi/360 = 0.01745. Because the key is ABSENT, the loader re-derives it from
+    # projection.bins, and changing the bin count keeps the grouping threshold matched.
+    # Add `distance_proportion: <value>` here to pin it instead.
+
+    max_split_distance_m: 0.20   # UPSTREAM.
+    max_merge_separation_m: 0.20 # UPSTREAM.
+    max_merge_spread_m: 0.20     # UPSTREAM.
+    max_circle_radius_m: 0.60    # UPSTREAM.
+
+    # UPSTREAM, and deliberately NOT retuned. This arena's obstacles are 0.2-0.3 m
+    # cylinders (dpcbf_config.yaml radius_range), so 0.25 m of enlargement roughly doubles
+    # them - conservative rather than wrong. The right value depends on the short-arc
+    # radius bias of the sqrt(3)/3 circle rule, which the detection phase's experiment
+    # measures. Guessing it now would launder a guess as a default.
+    radius_enlargement_m: 0.25
+
+    circles_from_visibles: true  # UPSTREAM.
+    use_split_and_merge: true    # UPSTREAM.
+
+    # Preallocation maxima. Splitting can produce more primitives than clusters, which is
+    # why max_primitives is the largest of the three.
+    max_clusters: 256
+    max_primitives: 512
+    max_circles: 256
+
+  # -------------------------------------------------------------------------------------
+  # TRACKING - the ported obstacle_tracker, rescheduled.
+  #
+  # The KF variances are upstream's. The lifecycle counters are NOT: upstream has no
+  # confirmation gate, only a timer-driven fade counter at a fixed loop_rate. Replacing
+  # that with a measurement-driven lifecycle is a deliberate design change.
+  # -------------------------------------------------------------------------------------
+  tracking:
+    process_variance: 0.01           # UPSTREAM.
+    process_rate_variance: 0.10      # UPSTREAM.
+    measurement_variance: 1.00       # UPSTREAM.
+    min_correspondence_cost_m: 0.30  # UPSTREAM (association gate in (x, y, r) space).
+
+    # NEW with the measurement-driven lifecycle. Three hits at 10 Hz is the 0.3 s
+    # confirmation delay the tracking acceptance gate allows.
+    confirm_hits: 3
+    delete_misses: 10
+
+    # UPSTREAM's `tracking_duration` (2.0 s), reinterpreted as a coasting horizon rather
+    # than a timer-tick fade.
+    max_coast_s: 2.0
+
+    enable_fusion: true          # N tracks -> 1 measurement, covariance-weighted merge.
+    enable_fission: true         # 1 track  -> N measurements.
+    max_tracks: 64
+
+  # -------------------------------------------------------------------------------------
+  # SAFETY-STATE GENERATION - validity gating and conservative inflation.
+  #
+  # Under-estimating a radius is the one unrecoverable error in this subsystem: the DPCBF
+  # filter applies its own s = 1.05 factor but assumes the radius it is given is exact.
+  # Every default here therefore errs large.
+  # -------------------------------------------------------------------------------------
+  safety:
+    # Oldest a frame may be and still be consumed. Must be >= one sensor frame period, or
+    # every frame is stale on arrival.
+    max_age_s: 0.30
+
+    min_track_age_s: 0.20
+    min_track_hits: 3            # Must be >= tracking.confirm_hits.
+
+    # radius <- max(fitted, enclosing) + k_sigma*sigma_r + fixed + latency*|v|
+    radius_inflation_k_sigma: 2.0
+    radius_inflation_fixed_m: 0.05
+    latency_inflation_s: 0.15    # One scan period plus processing.
+    use_enclosing_radius: true
+
+    # SOURCED floor: 0.20 m is the minimum of dpcbf_config.yaml's radius_range, i.e. the
+    # smallest object that exists in this arena at all. This is the candidate answer to the
+    # open question of what to do when an arc stays too short to fit a radius.
+    min_radius_m: 0.20
+    max_radius_m: 1.00           # Must be >= detection.max_circle_radius_m.
+
+    # Velocity spike clamp. Oracle obstacles top out at 0.8 m/s (dpcbf_config.yaml
+    # speed_range), so 1.6 m/s is 2x that and a clamp only ever fires on an estimator
+    # fault, never on a real obstacle.
+    max_speed_mps: 1.60
+
+    max_obstacles: 32            # Must be <= tracking.max_tracks.
+
+  # -------------------------------------------------------------------------------------
+  # DPCBF ADAPTER - SafetyObstacle -> dpcbf::ObstacleState.
+  # -------------------------------------------------------------------------------------
+  dpcbf_adapter:
+    # Track ids pass through unchanged. The filter selects top-k constraints and the
+    # visualizer colours by constraint, so a stable id is what stops that selection
+    # flickering between frames.
+    preserve_track_ids: true
+    id_offset: 0                 # Keeps oracle and estimated id spaces apart when needed.
+
+    # SOURCED bound: dpcbf_config.yaml uses default_num_constraints: 10, so 20 leaves the
+    # filter's own top-k selection something to select from without unbounded QP growth.
+    # Must be <= safety.max_obstacles.
+    max_obstacles: 20
+
+    drop_invalid: true           # Omit invalid/stale obstacles rather than passing them on.
+
+  # -------------------------------------------------------------------------------------
+  # MODE - the obstacle-source ladder.
+  #
+  # DEFAULT IS ORACLE, at every phase. The estimated path is never live by default; the
+  # oracle path is permanent and remains selectable forever.
+  # -------------------------------------------------------------------------------------
+  mode:
+    name: "oracle"               # oracle | shadow | compare | estimated_fallback | estimated
+
+    # Per-frame fallback trigger. Must be >= safety.max_age_s: falling back sooner than the
+    # safety stage declares a frame stale would make the safety gate dead code.
+    fallback_max_age_s: 0.30
+    fallback_on_invalid_frame: true
+    heartbeat_timeout_s: 0.50    # Missed perception-thread heartbeat also triggers fallback.
+
+    # Scenarios in which the estimated path may drive the live filter. Empty means none,
+    # which is the correct default for every mode below `estimated`.
+    scenario_allowlist: []
+
+  # -------------------------------------------------------------------------------------
+  # ROS2 ADAPTER - optional, visualization only.
+  #
+  # `enabled: true` here is NECESSARY BUT NOT SUFFICIENT: PERCEPTION_WITH_ROS2 must also be
+  # ON at build time. The loader cannot see a build flag, so enabling this without the
+  # adapter compiled in is a silent no-op, not an error.
+  # -------------------------------------------------------------------------------------
+  ros2:
+    enabled: false
+    topic_namespace: "/perception"
+    publish_rate_hz: 10.0        # Scan rate. Must be <= sensor.scan_rate_hz.
+    diagnostics_rate_hz: 1.0
+    publish_clouds: true
+    publish_scan: true
+    publish_markers: true
+    publish_tf: true
+    use_sim_time: true           # Stamp with MuJoCo sim time rather than wall time.
+    debug_level: 0               # 0 = off; higher publishes more intermediates.
+
+  # -------------------------------------------------------------------------------------
+  # DUMPS - the headless substitute for a visualization, and the regression-fixture format
+  # every later phase replays.
+  # -------------------------------------------------------------------------------------
+  dumps:
+    enabled: false
+    directory: "perception_dumps"
+    format: "jsonl"              # "jsonl" | "binary" | "both"
+
+    # Whether PerceptionFrame keeps its intermediate clouds. Off by default because it is
+    # the expensive one: ~11520 points per stage per frame.
+    retain_stage_clouds: false
+
+    max_frames: 0                # 0 = unlimited.
+    decimation: 1                # Write every Nth frame.
+
+  # -------------------------------------------------------------------------------------
+  # METRICS - the evaluator's output, in the dpcbf_rollout_evaluator JSON-manifest style.
+  # -------------------------------------------------------------------------------------
+  metrics:
+    enabled: true
+    manifest_path: "perception_metrics.json"
+
+    # Independent of `mode`: comparison metrics can be collected in shadow mode without the
+    # estimated path driving anything.
+    compare_against_oracle: false
+
+    # Nearest-centre association gate for that comparison. Beyond this an oracle obstacle
+    # counts as MISSED rather than badly estimated.
+    association_max_distance_m: 0.50
+
+  # -------------------------------------------------------------------------------------
+  # PROFILING.
+  # -------------------------------------------------------------------------------------
+  profiling:
+    enabled: false
+    per_stage_timing: true
+    allocation_counters: false   # Test-only counting allocator; never on a production path.
+    report_period_s: 10.0
+
+  # -------------------------------------------------------------------------------------
+  # EXPERIMENTAL ESCAPE HATCH.
+  #
+  # Any key here other than the flag itself is REJECTED unless allow_experimental is true,
+  # at which point it is captured verbatim into the run manifest. This is what stops a
+  # "deterministic, config-frozen" evaluation run from quietly containing an unreviewed
+  # knob.
+  # -------------------------------------------------------------------------------------
+  experimental:
+    allow_experimental: false

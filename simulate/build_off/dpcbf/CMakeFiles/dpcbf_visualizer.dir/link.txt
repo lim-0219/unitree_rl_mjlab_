@@ -1,0 +1,2 @@
+/usr/bin/ar qc libdpcbf_visualizer.a CMakeFiles/dpcbf_visualizer.dir/src/dpcbf_visualizer.cpp.o
+/usr/bin/ranlib libdpcbf_visualizer.a

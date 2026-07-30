@@ -1,0 +1,1 @@
+/usr/bin/cc  -O3 -O3 -O3 -DNDEBUG -rdynamic CMakeFiles/qdldl_example.dir/examples/example.c.o -o out/qdldl_example   -L/home/kwan/unitree_rl_mjlab_/simulate/mujoco/lib  -Wl,-rpath,/home/kwan/unitree_rl_mjlab_/simulate/mujoco/lib out/libqdldl.a  -lm -lrt -ldl 

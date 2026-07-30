@@ -1,0 +1,2 @@
+/usr/bin/ar qc libdpcbf_dynamic_obstacles.a CMakeFiles/dpcbf_dynamic_obstacles.dir/src/dynamic_obstacles.cpp.o
+/usr/bin/ranlib libdpcbf_dynamic_obstacles.a

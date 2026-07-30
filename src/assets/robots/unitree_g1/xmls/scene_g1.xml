@@ -144,9 +144,36 @@
             <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="torso_link"/>
             <geom pos="0.0039635 0 -0.044" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="logo_link"/>
             <geom pos="0.0039635 0 -0.044" quat="1 0 0 0" type="mesh" rgba="0.2 0.2 0.2 1" mesh="logo_link"/>
-            <geom pos="0.0039635 0 -0.044" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
-            <geom pos="0.0039635 0 -0.044" type="mesh" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
+            <!-- Mid-360 optical aperture. head_link.STL is a closed opaque envelope with no
+                 modelled window, and at the official extrinsic the Mid-360 origin sits INSIDE
+                 it, so a naive raycast self-hits on ~100% of rays. Both head geoms are therefore
+                 placed in visibility group 2, which the LiDAR ray caster excludes via the
+                 documented `geomgroup` mask of mj_ray / mj_multiRay. Dynamics-neutral: `group`
+                 is a visualization/ray-filtering attribute only - contype, conaffinity, density
+                 are unchanged, and torso_link carries an explicit <inertial> so these geoms
+                 never contributed mass or inertia. Group 2 still renders (mjv_defaultOption
+                 enables geom groups 0-2), so the head looks identical in every viewer.
+                 Source: g1_mid360_sensor_model.md section 4.1. Asserted by
+                 perception_mid360_bringup_test scenario V0 (dynamics neutrality). -->
+            <geom name="head_link_visual" pos="0.0039635 0 -0.044" type="mesh" contype="0" conaffinity="0" group="2" density="0" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
+            <geom name="head_link_collision" pos="0.0039635 0 -0.044" type="mesh" group="2" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
             <site name="imu_in_torso" size="0.01" pos="-0.03959 -0.00224 0.14792"/>
+            <!-- Livox Mid-360 mount, transcribed verbatim from Unitree's own `mid360_joint`
+                 fixed joint (parent torso_link) in the 16 up-to-date g1_description URDFs.
+                 Source: g1_mid360_extrinsic.md sections 5.1 / 6 / 6.2.
+                   xyz = 0.0002835 0.00003 0.428434
+                   rpy = 3.141592653589793 0.05112069379091391 0   (fixed-axis XYZ)
+                        -> quat(w x y z) = 0 0.999673352 0 -0.025557564
+                 roll = pi: the sensor is mounted UPSIDE DOWN on purpose (its +Z points down
+                 and +Y points to the robot's RIGHT). Do not "correct" this, and do not negate
+                 vertical_fov_deg: [-7, 52] - that FOV is in the sensor frame and this rotation
+                 already performs the flip. World height at the neutral standing pose: 1.2654 m.
+                 This site and perception.lidar in perception/configs/perception.yaml are
+                 cross-checked at every model load by VerifyLidarExtrinsic(); the process exits
+                 non-zero if they disagree. -->
+            <site name="lidar_mid360" size="0.02" rgba="1 0.4 0 1"
+                  pos="0.0002835 0.00003 0.428434"
+                  quat="0 0.999673352 0 -0.025557564"/>
             <body name="left_shoulder_pitch_link" pos="0.0039563 0.10022 0.24778" quat="0.990264 0.139201 1.38722e-05 -9.86868e-05">
               <inertial pos="0 0.035892 -0.011628" quat="0.654152 0.0130458 -0.326267 0.68225" mass="0.718" diaginertia="0.000465864 0.000432842 0.000406394"/>
               <joint name="left_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-3.0892 2.6704" actuatorfrcrange="-25 25"/>
