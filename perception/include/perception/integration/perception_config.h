@@ -279,12 +279,14 @@ struct DetectionConfig {
   double max_merge_spread_m = 0.20;      // UPSTREAM default.
   double max_circle_radius_m = 0.60;     // UPSTREAM default.
 
-  // UPSTREAM default. Deliberately NOT retuned here: this repository's obstacles are
-  // 0.2-0.3 m cylinders (dpcbf_config.yaml radius_range), so 0.25 m of enlargement roughly
-  // doubles them, which is conservative rather than wrong. The right value depends on the
-  // short-arc bias the detection phase's experiment measures (risk R8, open Q11), and
-  // guessing it now would launder a guess as a default.
-  double radius_enlargement_m = 0.25;
+  // MEASURED, replacing upstream's 0.25 m default that P1 kept "pending the P8 short-arc bias
+  // experiment (Q11)". Sized to cover the sqrt(3)/3 rule's systematic short-arc radius
+  // UNDER-estimate at the stage where it is made: P8 measured that at 0.16127 m worst case over
+  // 18 matched cylinders, and P10's corpus C measured 0.1668 m surviving the Kalman filter to
+  // the safety stage's input. 0.17 m is the smallest 0.01 m-granular value covering both.
+  // Full derivation, including why the flat budget stops at 0.25 m total rather than the 0.20 m
+  // cross-field floor, is in configs/perception.yaml next to the shipped value.
+  double radius_enlargement_m = 0.17;
 
   bool circles_from_visibles = true;  // UPSTREAM default.
   bool use_split_and_merge = true;    // UPSTREAM default.
@@ -378,7 +380,11 @@ struct SafetyConfig {
 
   // The only configured term besides detection.radius_enlargement_m that covers a SYSTEMATIC
   // radius under-estimate. Their sum is held to a measured floor by a cross-field constraint.
-  double radius_inflation_fixed_m = 0.05;
+  // Raised 0.05 -> 0.08 when the enlargement was re-derived to 0.17 m: the enlargement is sized
+  // by the bias it covers and this term carries whatever the flat TOTAL has to be, which the
+  // safety suite's strict-form containment gate puts at 0.2395 m. The two are interchangeable
+  // downstream, so only the total is a performance number.
+  double radius_inflation_fixed_m = 0.08;
 
   // One scan period plus processing. This IS the doc's `latency * k_lat`; the coefficient is
   // folded in, there is no separate k_lat.

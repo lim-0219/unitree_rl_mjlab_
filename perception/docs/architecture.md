@@ -895,3 +895,137 @@ No new keys. `k_sigma`, `fixed`, `latency` and `min_radius_m` keep their shipped
 changed is the commentary, which now states the implemented rule rather than the doc's formula,
 and one new **cross-field constraint** (the short-arc bias budget above). `use_enclosing_radius`
 is documented as a no-op with a test to keep it one.
+
+## 10. Two corrective passes over §9's constants — what moved, and what it cost
+
+§9 is left as P10 wrote it, because it is the record of what P10 actually measured. Two later
+passes changed constants that §9's numbers depend on, so the statements below **supersede** the
+ones they name. Both passes changed configuration and commentary only — no algorithm, no
+contract, no new key.
+
+### Pass 1 — `fit_residual_m` was measured against the enlarged radius
+
+The detector computed the circle residual as the RMS distance from `radius_fitted_m`, which
+already carries `detection.radius_enlargement_m`. Every residual therefore carried the
+enlargement as an additive constant, and `fit_residual_m`'s only consumer is the measurement-sigma
+formula. Corrected to measure against `radius_unenlarged`.
+
+Superseded from §9:
+
+* "mean `sigma_radius_m` 0.128 m at 0.25 m enlargement, 0.024 m at zero — a 5.4× artefact" —
+  the artefact is gone. Both readings are now **0.0239 m**, and `sigma_radius_m` is asserted
+  invariant under the enlargement (safety §H).
+* "k_σ terms 0.293 m" in the inflation attribution → **0.0739 m**, a 75 % reduction.
+* QP feasibility, which P11 measured at 0.9750 against the oracle's 1.0000, now **meets**.
+* The Q12 sweep table's corpus-C row at k_σ = 2.00 — P10 recorded **93.91 %**; the smaller sigmas
+  took it to **90.38 %**, and pass 2's larger safety-side fixed term then lifted it to
+  **97.76 %**. Three values for one cell, which is why the config's commentary now names the
+  corpus and the config rather than quoting a percentage. The *conclusion* it supports is
+  unchanged and is what matters: without the enlargement the shipped k_σ does not reach 99.9 %.
+
+### Pass 2 — `radius_enlargement_m` was still upstream's default
+
+P1 kept upstream's 0.25 m "pending the P8 short-arc-bias experiment (Q11)". P8 ran that
+experiment and nobody closed the loop. Re-derived here:
+
+| measurement | corpus | value |
+|---|---|---|
+| worst de-enlarged radius under-estimate | P8 §I, 18 matched cylinders (12 full-arc, 6 half-arc) | **0.16127 m** |
+| — full-arc population | n = 12 | mean −0.0061 m, worst under 0.0200 m |
+| — half-arc population | n = 6 | mean −0.1446 m, worst under 0.1613 m |
+| worst under-estimate surviving the filter to the safety input | P10 corpus C, 312 samples | **0.1668 m** |
+
+`detection.radius_enlargement_m` = **0.17 m** — the smallest 0.01 m-granular value covering both
+on its own. Shipping 0.16127 m would assert that an 18-cylinder corpus with 6 half-arc samples
+located the population's worst case; 0.01 m is finer than that population's own spread
+(0.1358–0.1613 m).
+
+`safety.radius_inflation_fixed_m` **0.05 → 0.08 m**, carrying the remainder of a 0.25 m flat
+total. The split is free and the total is not, and that is measured rather than assumed: with
+`min_radius_m` out of the way, corpus C carrying the whole budget on the safety side and corpus B
+carrying the shipped split agree to **1e-9 m**. (With the floor active they do not, because the
+floor binds on the enlargement-free corpus and not on the shipped one — so corpus C at the full
+safety-side budget is *conservative* relative to the real split, not equivalent. Asserted in that
+direction.)
+
+### Why the flat budget stopped at 0.25 m and not at the 0.20 m cross-field floor
+
+This is the finding of pass 2, and it contradicts what pass 1's report projected (a reachable
+saving of ~0.10 m).
+
+§9's strict-form check — same-instant containment with `latency_inflation_s` zeroed, because
+crediting a consumption latency that has not been consumed lets one term's margin pay for
+another's shortfall — needs a **flat total of 0.2395 m**. Its worst margin is exactly
+`total − 0.2395` m across the swept range, and the 1:1 relation is now asserted rather than
+inferred from one point. At the 0.20 m cross-field floor the gate reports **90.64 %** against a
+99.9 % target. So:
+
+* realised saving **0.05 m** (0.30 → 0.25 m of flat terms), not 0.10 m;
+* the cross-field constraint stays at 0.20 m, where its own derivation (the bias) puts it — it is
+  a load-time check on one measured quantity, and folding a second, differently-derived
+  requirement into the same constant would make neither traceable;
+* §9's "containment also holds at 100 % with the latency term zeroed" still holds, but the margin
+  went from **+0.0605 m to +0.0105 m**. `safety.latency_inflation_s` is no longer inert.
+
+### §12 gates after both passes
+
+| metric | target | P11 | after pass 1 | after pass 2 |
+|---|---|---|---|---|
+| command-delta RMSE | ≤ 0.100 m/s | 0.3237 | 0.1890 | **0.1732** — still missed, by 1.73× |
+| QP feasibility | ≥ oracle (1.0000) | 0.9750 | 1.0000 | **1.0000** |
+| velocity RMSE | ≤ 0.10 m/s | 0.1122 | 0.0479 | **0.0479** |
+| intervention-rate difference | ≤ 0.200 | 0.0875 | 0.0437 | **0.0375** |
+| min-clearance difference | ≥ −0.05 m | — | 0.0914 | **0.0728** |
+| collisions (lookahead proxy) | 0 | — | 0 | **0** |
+| end-to-end latency | ≤ 150 ms | — | 100.10 | **100.06 ms** [PARTIAL] |
+| containment (corpus A, 171) | ≥ 99.9 % | — | 100.0000 % | **100.0000 %** |
+| radius under-estimation (corpus A) | ≤ 0.1 % | — | 0.0000 % | **0.0000 %** |
+| containment (corpus C at the shipped flat budget) | ≥ 99.9 % | — | — | **100.0000 %** |
+
+Radius handed to the QP: **0.4776 → 0.4282 m** over truth on average. A 0.25 m cylinder reaches
+the filter at ~0.69 m rather than ~0.74 m (P10: ~0.94 m).
+
+### The open finding
+
+Two constants have now been re-derived from measurements and the command-delta gate is still
+missed by 1.73×. The ablation is unambiguous about where the miss lives — substituting the true
+radius gives 0.0192 m/s, substituting true centres and velocity gives 0.1564 m/s — so it is still
+the radius. But the flat terms are done, and what is left at the top of the attribution is
+`safety.latency_inflation_s`: 0.15 s, 0.1095 m, 26 % of the over-statement, and still a
+**JUDGEMENT** value. It cannot be re-derived from anything this repository measures, because the
+§12 latency figure is a 100 ms scan window plus sub-millisecond compute with the queueing and
+thread-handoff terms explicitly absent until P12.
+
+That two independent, correctly-derived reductions moved the gate from 3.2× to 1.7× and stopped
+is the result — not a third constant to reach for.
+
+**And the target is not reachable this way at all**, which the pass measured rather than
+inferred, because "which constant next" is the wrong question if the answer is none of them. Two
+deliberately unshippable configurations were run through the same paired probe:
+
+| configuration | command-delta RMSE |
+|---|---|
+| shipped | 0.1732 m/s |
+| `latency_inflation_s` = 0 and the flat budget at the strict-form minimum (0.2395 m) — the best a perfect latency measurement could do while still containing the obstacle | **0.1312 m/s** |
+| the same, and k_σ zeroed as well — abandons containment on corpus C, included only as a lower bound | **0.1124 m/s** |
+
+So even a latency measurement that came back as zero leaves the gate missed by 1.31×, and giving
+up containment entirely still misses by 1.12×. The remaining distance is a property of presenting
+DPCBF a conservatively inflated radius at all, not of any one constant's value — the ablation's
+first row (true radius → 0.0192 m/s) is the same statement from the other side. Whatever closes
+this gap is a change to *what is published*, not a smaller number in the config. Both floor rows
+are asserted, so if a later change makes either reach the target this conclusion goes red rather
+than quietly persisting.
+
+### One detection-side consequence, recorded because it changed a test's answer
+
+The enlargement is added **before** `max_circle_radius_m` is applied, so shrinking it widens what
+the detector will report. One scene in the corpus crosses that threshold: two overlapping 0.25 m
+cylinders at 2 m merge into a circle measuring 0.549 m at the shipped enlargement and 0.629 m at
+upstream's 0.25 m, against a 0.60 m cap. At 0.25 m the cap dropped it and the scene reported **no
+obstacle at all** while a `circles.size() <= 1` assertion passed vacuously; at 0.17 m it is
+emitted. The check now asserts the count from both sides and verifies the mechanism.
+
+Everything else in P8's fit-accuracy report is byte-identical — cluster precision/recall/purity,
+both arc populations' centre and radius errors, the seam findings, and pass 1's §K residual
+invariance — as it must be, since the de-enlarged radius is what those measure.

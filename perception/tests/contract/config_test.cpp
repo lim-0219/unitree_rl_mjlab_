@@ -324,17 +324,23 @@ void TestCrossFieldConstraints() {
   // The enlargement-versus-cap trap: enlarge then compare, so enlargement >= cap rejects
   // every circle the detector will ever fit.
   CheckRejects("enlargement_swallows_cap.yaml",
-               ShippedWith("    radius_enlargement_m: 0.25", "    radius_enlargement_m: 0.60"),
+               ShippedWith("    radius_enlargement_m: 0.17", "    radius_enlargement_m: 0.60"),
                "radius_enlargement_m must be < detection.max_circle_radius_m",
                "an enlargement at or above the circle cap is rejected");
 
   // THE SHORT-ARC BIAS BUDGET, added at P10. Only `detection.radius_enlargement_m` and
   // `safety.radius_inflation_fixed_m` cover a SYSTEMATIC radius under-estimate; the stochastic
-  // `k_sigma * sigma_r` term provably does not (P10 measured containment falling to 93.9% on a
-  // corpus with the enlargement absent). Zeroing the enlargement is a detection-side edit whose
-  // only consequence is at the far end of the pipeline, so it is rejected rather than trusted.
+  // `k_sigma * sigma_r` term provably does not - on a corpus with the enlargement absent,
+  // containment at the shipped config is 97.76% against a 99.9% target (safety_test section F,
+  // which measures it live; P10's 93.91% and the 90.38% that followed the fit_residual_m
+  // correction are both stale, so the live measurement is what this comment defers to rather
+  // than a percentage frozen into a test that does not compute it).
+  // Zeroing the enlargement is a detection-side edit whose only consequence is at the far end of
+  // the pipeline, so it is rejected rather than trusted.
+  //
+  // The shipped split is 0.17 + 0.08 = 0.25 m. Zeroing the enlargement leaves 0.08 m.
   CheckRejects("short_arc_budget.yaml",
-               ShippedWith("    radius_enlargement_m: 0.25", "    radius_enlargement_m: 0.0"),
+               ShippedWith("    radius_enlargement_m: 0.17", "    radius_enlargement_m: 0.0"),
                "must be >= 0.20 m, the measured worst-case short-arc radius under-estimate",
                "zeroing the detector enlargement without raising the safety fixed term is "
                "rejected");

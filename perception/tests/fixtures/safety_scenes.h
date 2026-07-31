@@ -14,10 +14,12 @@
 //   B. `RebasedTrackingStreams()` - P9's own seven streams, with their radius channel REBASED
 //      onto the detector's convention by adding `detection.radius_enlargement_m`. P9's fixture
 //      emits `radius_fitted_m = truth_radius + noise`, which no real detector ever produces:
-//      the shipped extractor adds a flat 0.25 m (segment_circle_detector.cpp:460). P9 was right
+//      the shipped extractor adds a flat 0.17 m (segment_circle_detector.cpp:460). P9 was right
 //      to ignore that - the enlargement is a constant and cancels in every difference its gates
 //      look at - but it makes the raw streams unusable as an absolute-radius bed, because they
-//      describe a detector that is 0.25 m more accurate than the one that exists.
+//      describe a detector that is 0.17 m more accurate than the one that exists. The rebase
+//      reads the live config value rather than a literal, so this corpus tracks the shipped
+//      enlargement instead of pinning the 0.25 m it was written against.
 //
 //      The rebase changes ONE number per observation and preserves every error realisation:
 //      the same seeds, the same Gaussian draws, the same -0.145 m visibility bias, the same

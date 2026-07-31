@@ -41,15 +41,23 @@ inline const char* ToString(ObstacleSource source) {
 // `TrackState2D::radius_m`, which is the Kalman filter driven by
 // `CircleObservation::radius_fitted_m`, and that observation is
 // `0.5773502 * chord + detection.radius_enlargement_m` (segment_circle_detector.cpp). The
-// enlargement - 0.25 m as shipped - is INSIDE this number. In upstream's own vocabulary this
+// enlargement - 0.17 m as shipped - is INSIDE this number. In upstream's own vocabulary this
 // field carries `CircleObstacle::radius`; `true_radius` is `radius - radius_enlargement` and no
 // stage computes it after detection.
 //
 // The size of the discrepancy, measured on the P8 corpus: this field over-states the real
-// obstacle radius by +0.089 m to +0.278 m. That over-statement is not a defect - it is the only
-// term in the pipeline covering P8's short-arc UNDER-estimate of up to 0.161 m, which is why
-// the safety stage is forbidden from subtracting it back off and why
+// obstacle radius by +0.009 m to +0.198 m (it was +0.089 m to +0.278 m when the enlargement was
+// upstream's 0.25 m; re-deriving it to 0.17 m translates the whole range by -0.08 m and changes
+// nothing else, since the enlargement enters as an additive constant). That over-statement is
+// not a defect - it is the only term in the pipeline covering P8's short-arc UNDER-estimate of
+// up to 0.161 m, which is why the safety stage is forbidden from subtracting it back off and why
 // PerceptionConfig::Validate() enforces a floor on the two terms that provide it.
+//
+// NOTE THAT THE LOW END OF THAT RANGE IS NOW +0.009 m. The over-statement is still positive on
+// every measured sample, which is the property that matters, but it is no longer positive by a
+// comfortable margin on the best-fitting full-arc case - which is the intended consequence of
+// sizing the enlargement to the measured bias instead of to a default that roughly doubled every
+// obstacle.
 //
 // The name is kept rather than corrected because renaming a frozen contract field would touch
 // every consumer for no behavioural gain; what it means is written down here instead.

@@ -527,13 +527,24 @@ int main(int argc, char** argv) {
               "        dominated by track BIRTH (the confirmation gate) rather than by loss.\n");
 
   // -------------------------------------------------------------------------------------
-  Section("F. THE VERDICT ON THE INFLATION FIGURE (0.94 m before the fix, 0.74 m after)");
+  Section("F. THE VERDICT ON THE INFLATION FIGURE (0.94 m at P10, 0.74 m, now 0.69 m)");
   // -------------------------------------------------------------------------------------
   // P10 established containment and reported the cost: mean total inflation 0.444 m, so a real
   // 0.25 m cylinder was presented to the QP at roughly 0.94 m. P11 measured what that did to the
-  // QP and found two section-12 gates missed. The fit_residual_m correction then removed the
-  // largest term. This section reports the before/after and, where a gate is still missed, which
-  // term now owns it - by ablation rather than by argument.
+  // QP and found two section-12 gates missed. Two corrections have been applied since, both to
+  // CONSTANTS rather than to algorithms, and this section reports the before/after and - where a
+  // gate is still missed - which term now owns it, by ablation rather than by argument.
+  //
+  //   1. `fit_residual_m` was computed against the ENLARGED radius, so every sigma carried
+  //      `radius_enlargement_m` as an additive constant. Fixed: 0.94 m -> 0.74 m.
+  //   2. `radius_enlargement_m` was upstream's 0.25 m default, the last term still sized by a
+  //      default rather than a measurement. Re-derived from P8's short-arc bias to 0.17 m, with
+  //      `safety.radius_inflation_fixed_m` taking 0.03 m of that back so the flat total lands at
+  //      0.25 m: 0.74 m -> 0.69 m.
+  //
+  // THE COMMAND-DELTA GATE IS STILL MISSED AND THIS SECTION DOES NOT PRETEND OTHERWISE. It went
+  // 0.3237 -> 0.1890 -> 0.1732 m/s against a 0.100 m/s target. Both of the levers that were
+  // obviously available have now been pulled, and neither closed the gap.
   {
     const double mean_supplied =
         deltas.samples > 0
@@ -560,16 +571,22 @@ int main(int argc, char** argv) {
                 F(mean_supplied, 3).c_str());
 
     std::printf(
-        "\n      VERDICT: PARTLY. The fit_residual_m correction cleared one of the two gates that\n"
-        "      missed and moved the other a long way without reaching it.\n"
-        "        QP feasibility        0.9750 -> %s  (oracle 1.0000)  NOW MEETS\n"
-        "        command-delta RMSE    0.3237 -> %s  (target 0.100)   STILL MISSES, by 1.9x\n"
-        "      Supporting movement, all in the same direction: radius over truth 0.6803 -> %s m,\n"
-        "      velocity RMSE 0.1122 -> %s m/s, intervention-rate difference 0.0875 -> %s,\n"
-        "      worst per-sample clearance difference -0.8402 -> %s m. A 0.25 m cylinder now\n"
-        "      reaches the QP at about 0.74 m rather than 0.94 m; after the filter's own s=1.05\n"
-        "      and r_rob=0.30 that is an effective keep-out of ~1.07 m against the oracle's\n"
-        "      ~0.56 m, so 1.9x rather than 2.3x.\n",
+        "\n      VERDICT: PARTLY, AND THE REMAINING GAP IS NOT CLOSING BY THIS ROUTE.\n"
+        "        QP feasibility        0.9750 -> 1.0000 -> %s  (oracle 1.0000)  MEETS\n"
+        "        command-delta RMSE    0.3237 -> 0.1890 -> %s  (target 0.100)   STILL MISSES\n"
+        "      The three columns are P11 as measured, after the fit_residual_m correction, and\n"
+        "      after radius_enlargement_m was re-derived from P8's short-arc bias measurement.\n"
+        "      Supporting movement, all in the same direction: radius over truth\n"
+        "      0.6803 -> 0.4776 -> %s m, velocity RMSE 0.1122 -> 0.0479 -> %s m/s,\n"
+        "      intervention-rate difference 0.0875 -> 0.0437 -> %s, worst per-sample clearance\n"
+        "      difference -0.8402 -> -0.0000 -> %s m. A 0.25 m cylinder now reaches the QP at\n"
+        "      about 0.69 m rather than 0.94 m.\n"
+        "\n"
+        "      WHAT THE SECOND CORRECTION BOUGHT, STATED PLAINLY: 0.0158 m/s of the 0.0732 m/s\n"
+        "      still outstanding. The first correction was worth 0.1347 m/s. Two constants have\n"
+        "      now been re-derived from measurements and the gate is still missed by 1.73x, so\n"
+        "      the remaining distance is not another mis-sized flat term - see the attribution\n"
+        "      below, and the open finding attached to it.\n",
         F(estimated_feasibility, 4).c_str(), F(deltas.command_rmse_mps).c_str(),
         F(errors.radius_inflated_bias_m).c_str(), F(errors.velocity_rmse_mps).c_str(),
         F(intervention_difference, 4).c_str(), F(deltas.clearance_delta_worst_m).c_str());
@@ -577,6 +594,12 @@ int main(int argc, char** argv) {
     // THE LEVER, NOW APPLIED - and re-measured here so the claim is not inherited from the
     // phase that made it. `fit_residual_m` is computed against the un-enlarged radius, so it no
     // longer carries radius_enlargement_m as an additive constant.
+    //
+    // The same sweep also measures the detector's own MEAN de-enlarged radius error on this
+    // corpus - P8's finding-2 quantity, on P11's scenes. It is the one row of the attribution
+    // table below that is not a configured constant, and taking it by subtraction from the other
+    // rows would be arithmetic on two harnesses' means rather than a measurement.
+    double mean_deenlarged_radius_error = 0.0;
     {
       SegmentCircleDetector probe_detector(detector_params);
       Detection2DResult probe_detection;
@@ -584,6 +607,8 @@ int main(int argc, char** argv) {
       double sigma_sum = 0.0;
       double residual_min = 1e9;
       int circles = 0;
+      double deenlarged_error_sum = 0.0;
+      int matched_circles = 0;
       for (const safety_scenes::MovingScene& scene : safety_scenes::MovingScenes()) {
         for (const safety_scenes::MovingFrame& frame : scene.frames) {
           if (probe_detector.Detect(frame.scan, &probe_detection) != nullptr) break;
@@ -592,9 +617,27 @@ int main(int argc, char** argv) {
             residual_sum += circle.fit_residual_m;
             sigma_sum += circle.sigma_radius_m;
             residual_min = std::min(residual_min, circle.fit_residual_m);
+
+            // Nearest truth centre inside the same generous gate the other harnesses use; a
+            // tight gate would make the association part of the measurement.
+            const safety_scenes::MovingTruth* best = nullptr;
+            double best_distance = 1.0;
+            for (const safety_scenes::MovingTruth& truth : frame.truth) {
+              const double distance = (circle.center - truth.center).norm();
+              if (distance < best_distance) {
+                best_distance = distance;
+                best = &truth;
+              }
+            }
+            if (best == nullptr) continue;
+            ++matched_circles;
+            deenlarged_error_sum +=
+                (circle.radius_fitted_m - detector_params.radius_enlargement_m) - best->radius;
           }
         }
       }
+      mean_deenlarged_radius_error =
+          matched_circles > 0 ? deenlarged_error_sum / matched_circles : 0.0;
       const double mean_residual = circles > 0 ? residual_sum / circles : 0.0;
       const double mean_sigma = circles > 0 ? sigma_sum / circles : 0.0;
       const double enlargement = config.detection.radius_enlargement_m;
@@ -602,10 +645,13 @@ int main(int argc, char** argv) {
       std::printf(
           "\n      THE LEVER, AFTER (%d fitted circles; the same measurement P11 first reported):\n"
           "        mean fit_residual_m         %s m   (was 0.3076; smallest now %s m, was 0.2761)\n"
-          "        radius_enlargement_m        %s m   (unchanged, and no longer inside the above)\n"
+          "        radius_enlargement_m        %s m   (re-derived from 0.25; NOT inside the above,\n"
+          "                                            which is why the residual did not move with it)\n"
           "        mean sigma_radius_m         %s m   (was 0.1281)\n"
-          "        P10 k_sigma inflation term  0.0739 m (was 0.2926) - a 75%% reduction\n"
-          "        P10 mean total inflation    0.2413 m (was 0.4443)\n",
+          "        safety k_sigma inflation    0.0739 m (was 0.2926) - a 75%% reduction\n"
+          "        safety-side mean inflation  0.2719 m (was 0.4443; up from 0.2413 only because\n"
+          "                                    radius_inflation_fixed_m absorbed 0.03 m of the\n"
+          "                                    enlargement - the SUM of the two fell by 0.05 m)\n",
           circles, F(mean_residual).c_str(), F(residual_min).c_str(), F(enlargement).c_str(),
           F(mean_sigma).c_str());
 
@@ -613,6 +659,22 @@ int main(int argc, char** argv) {
             "the residual is no longer floored by the enlargement - the smallest fit on the "
             "corpus now reports well under it, where it used to report just over it",
             "smallest residual " + F(residual_min) + " m vs enlargement " + F(enlargement) + " m");
+
+      // THE RE-DERIVED ENLARGEMENT, CHECKED AGAINST THE THING IT WAS DERIVED FROM. P8 measured
+      // the worst de-enlarged under-estimate at 0.16127 m and P10's corpus C measured 0.1668 m
+      // of it surviving the filter; the enlargement is sized to cover the larger of those. This
+      // asserts the relation rather than the number, so a future re-derivation that moved the
+      // enlargement below what the measurement demands fails here instead of in the field.
+      Check(enlargement >= 0.1668,
+            "radius_enlargement_m covers the worst short-arc radius under-estimate that reaches "
+            "the safety stage (P10 corpus C, 0.1668 m) on its own, without help from "
+            "safety.radius_inflation_fixed_m",
+            F(enlargement) + " m >= 0.1668 m");
+      Check(mean_deenlarged_radius_error < 0.0 &&
+                mean_deenlarged_radius_error > -enlargement,
+            "and P8's finding 2 still holds on THIS corpus - the de-enlarged fit under-states "
+            "the truth on average, by less than the enlargement covers",
+            F(mean_deenlarged_radius_error) + " m against a " + F(enlargement) + " m enlargement");
     }
 
     // WHAT IS LEFT, AND WHICH TERM TO GO AFTER NEXT. Measured by ablation rather than argued
@@ -622,23 +684,57 @@ int main(int argc, char** argv) {
     {
       std::printf("\n      WHAT STILL OWNS THE REMAINING %s m/s (ablation against the same "
                   "oracle arm):\n", F(deltas.command_rmse_mps).c_str());
-      struct Ablation { const char* name; bool true_radius; bool true_pose; };
+      // THE THIRD AND FOURTH ROWS ARE NOT LEVERS - THEY ARE THE FLOOR OF THIS PATH.
+      //
+      // Two flat constants have now been re-derived from measurement and the gate is still
+      // missed, so the question worth answering is not "which constant next" but "is 0.100 m/s
+      // reachable by shrinking the safety radius at all". These two rows answer it by running
+      // configurations that are deliberately NOT shippable:
+      //
+      //   * "flat at the strict-form minimum, latency zeroed" - the flat budget pushed down to
+      //     the 0.2395 m that section G's strict-form containment gate needs, and
+      //     `latency_inflation_s` set to zero, i.e. a perfect latency measurement returning
+      //     nothing. This is the best a re-derivation of the remaining constants could do while
+      //     still containing the obstacle.
+      //   * "...and k_sigma zeroed too" - additionally discards the uncertainty inflation, which
+      //     provably breaks containment on corpus C (safety section F). Included only as an
+      //     unreachable lower bound.
+      const double strict_form_flat_minimum = 0.2395;
+      SafetyParams floor_params = safety_params;
+      floor_params.latency_inflation_s = 0.0;
+      floor_params.radius_inflation_fixed_m =
+          strict_form_flat_minimum - detector_params.radius_enlargement_m;
+      SafetyParams floor_no_sigma = floor_params;
+      floor_no_sigma.radius_inflation_k_sigma = 0.0;
+
+      struct Ablation {
+        const char* name;
+        bool true_radius;
+        bool true_pose;
+        const SafetyParams* safety_override;
+      };
       const Ablation ablations[] = {
-          {"estimated centres, TRUE radius        ", true, false},
-          {"TRUE centres and velocity, est radius ", false, true},
+          {"estimated centres, TRUE radius             ", true, false, nullptr},
+          {"TRUE centres and velocity, est radius      ", false, true, nullptr},
+          {"flat at strict-form minimum, latency zeroed", false, false, &floor_params},
+          {"  ...and k_sigma zeroed too (UNCONTAINED)  ", false, false, &floor_no_sigma},
       };
       double radius_only_rmse = 0.0;
       double pose_only_rmse = 0.0;
+      double floor_rmse = 0.0;
+      double unreachable_floor_rmse = 0.0;
       for (const Ablation& ablation : ablations) {
         PairedFilterProbe ablation_probe;
         if (ablation_probe.Load(dpcbf_config, kControlDtS) != nullptr) continue;
+        const SafetyParams& ablation_params =
+            ablation.safety_override != nullptr ? *ablation.safety_override : safety_params;
         double square_sum = 0.0;
         int count = 0;
         int ablation_sample = 0;
         for (const safety_scenes::MovingScene& scene : safety_scenes::MovingScenes()) {
           SegmentCircleDetector ablation_detector(detector_params);
           KfCircleTracker ablation_tracker(tracking_params);
-          SafetyStateGenerator ablation_safety(safety_params);
+          SafetyStateGenerator ablation_safety(ablation_params);
           Detection2DResult ablation_detection;
           Tracking2DResult ablation_tracking;
           SafetyStateResult ablation_result;
@@ -693,6 +789,8 @@ int main(int argc, char** argv) {
         std::printf("        %s cmdRMSE %s m/s\n", ablation.name, F(rmse).c_str());
         if (ablation.true_radius) radius_only_rmse = rmse;
         if (ablation.true_pose) pose_only_rmse = rmse;
+        if (ablation.safety_override == &floor_params) floor_rmse = rmse;
+        if (ablation.safety_override == &floor_no_sigma) unreachable_floor_rmse = rmse;
       }
 
       Check(radius_only_rmse < 0.1,
@@ -705,24 +803,93 @@ int main(int argc, char** argv) {
             "finding from the other side",
             F(pose_only_rmse) + " m/s against " + F(deltas.command_rmse_mps) + " m/s as-is");
 
+      // THE DECISIVE ONE. Both floor rows still miss the target, so no re-derivation of any
+      // remaining inflation constant can reach it - including a perfect latency measurement that
+      // returned zero, and including a configuration that abandons containment altogether. This
+      // is asserted rather than printed because it is the finding that says where NOT to look
+      // next; if a future change made either row pass, the conclusion has to be revisited rather
+      // than left standing as a stale "unreachable".
+      std::printf("\n      NEITHER FLOOR ROW REACHES 0.100 m/s. The safety-legal floor of this\n"
+                  "      path - every remaining inflation constant driven to the smallest value\n"
+                  "      that still contains the obstacle - is %s m/s, and abandoning containment\n"
+                  "      as well only reaches %s m/s. The gap is not a mis-sized constant.\n",
+                  F(floor_rmse).c_str(), F(unreachable_floor_rmse).c_str());
+      Check(floor_rmse > 0.1,
+            "RECORDED: section 12's 0.100 m/s command-delta target is NOT reachable by shrinking "
+            "the safety radius - the floor of the whole path, at the smallest inflation that "
+            "still contains the obstacle, still misses it",
+            F(floor_rmse) + " m/s against the 0.1 m/s target");
+      Check(unreachable_floor_rmse > 0.1,
+            "and it is not reachable even by a configuration that abandons containment, which is "
+            "what makes this a property of the conservative-radius approach rather than of any "
+            "one constant's value",
+            F(unreachable_floor_rmse) + " m/s");
+      Check(floor_rmse < deltas.command_rmse_mps,
+            "the floor rows really are looser than the shipped config, so the two checks above "
+            "are measuring a floor and not a broken ablation",
+            F(floor_rmse) + " m/s vs " + F(deltas.command_rmse_mps) + " m/s shipped");
+
       std::printf(
           "\n      NEXT-LARGEST TERM, NAMED. The radius handed to the QP is %s m over truth on\n"
-          "      average. Its budget, from P10's own attribution plus the detector's constant:\n"
-          "        detection.radius_enlargement_m   0.2500 m   52%%  <- LARGEST\n"
-          "        safety latency drift             0.1095 m   23%%\n"
-          "        safety k_sigma terms             0.0739 m   15%%  (was 0.2926 before this fix)\n"
-          "        safety.radius_inflation_fixed_m  0.0500 m   10%%\n"
-          "      radius_enlargement_m is UPSTREAM's value. P1 kept it deliberately, 'pending the\n"
-          "      P8 short-arc-bias experiment (Q11)'; P8 then measured that bias at 0.161 m worst\n"
-          "      case and -0.0125 m mean on this corpus, and the enlargement has never been\n"
-          "      re-derived from those numbers. It is the only term still sized by a default\n"
-          "      rather than by a measurement.\n"
-          "      IT CANNOT GO TO ZERO. PerceptionConfig::Validate() requires\n"
-          "      radius_enlargement_m + radius_inflation_fixed_m >= 0.20 m, and section F of the\n"
-          "      safety suite re-confirms that budget is what actually carries containment on an\n"
-          "      enlargement-free corpus. The reachable saving is therefore about 0.10 m (0.30 m\n"
-          "      of flat terms down to the 0.20 m floor), after which latency drift is next.\n",
+          "      average. Its budget, from the safety suite's own attribution plus the detector's\n"
+          "      constant:\n"
+          "        detection.radius_enlargement_m   0.1700 m   40%%  <- LARGEST\n"
+          "        safety latency drift             0.1095 m   26%%\n"
+          "        safety.radius_inflation_fixed_m  0.0800 m   19%%\n"
+          "        safety k_sigma terms             0.0739 m   17%%\n"
+          "        safety elapsed (age) drift       0.0090 m    2%%\n"
+          "        detector's own mean radius error %s m  (MEASURED above, not taken by\n"
+          "                                                   subtraction; the de-enlarged fit\n"
+          "                                                   sits BELOW truth on average here)\n"
+          "      The five configured terms sum to 0.4424 m; with the last row that is 0.4299 m\n"
+          "      against a measured %s m, leaving 0.0017 m (0.4%%) unaccounted for - the four\n"
+          "      safety terms are means over the safety suite's 171 containment samples while the\n"
+          "      QP figure is a mean over this harness's associated samples, and the two sample\n"
+          "      sets are close but not identical. Stated rather than rounded away.\n"
+          "      The last row is the quantity P8 reports per population (-0.0061 m full-arc,\n"
+          "      -0.1446 m half-arc). It was ATTRIBUTED TO P8 by the previous version of this\n"
+          "      block, which is wrong - P8 never pools its two populations, and pooling them\n"
+          "      over P8's own corpus gives -0.0523 m, not this. The value is a property of THIS\n"
+          "      corpus, whose scenes are mostly full-arc. The number the previous version quoted\n"
+          "      (-0.0125 m) is confirmed by the live measurement above; only its provenance was\n"
+          "      wrong.\n"
+          "\n"
+          "      radius_enlargement_m IS NO LONGER A DEFAULT. P1 kept upstream's 0.25 m 'pending\n"
+          "      the P8 short-arc-bias experiment (Q11)'; that experiment measured the bias at\n"
+          "      0.16127 m worst case over 18 matched cylinders, P10's corpus C measured 0.1668 m\n"
+          "      of it surviving the filter to the safety stage, and 0.17 m is the smallest\n"
+          "      0.01 m-granular value covering both. See configs/perception.yaml.\n"
+          "\n"
+          "      THE FLAT BUDGET IS NOW AT ITS MEASURED FLOOR, WHICH IS NOT THE CONFIG FLOOR.\n"
+          "      The prior pass projected a reachable saving of about 0.10 m, reasoning that the\n"
+          "      0.30 m of flat terms could fall to the 0.20 m cross-field constraint. It cannot.\n"
+          "      Section G of the safety suite measures same-instant containment with the latency\n"
+          "      term zeroed, and that gate needs a flat total of 0.2395 m - its worst margin is\n"
+          "      exactly 'total - 0.2395' m across the swept range. At the 0.20 m config floor it\n"
+          "      reports 90.64%%. So the saving realised was 0.05 m (0.30 -> 0.25), and the flat\n"
+          "      terms are done.\n"
+          "\n"
+          "      OPEN FINDING, NOT A NEXT LEVER. What is left at the top of the table after the\n"
+          "      enlargement is safety.latency_inflation_s (0.15 s, 0.1095 m, 26%%), and it is\n"
+          "      still a JUDGEMENT value - one scan period plus an estimate of processing. It\n"
+          "      cannot be re-derived here, because no end-to-end latency observation exists in\n"
+          "      this repository yet: the figure the section-12 latency row reports above is a\n"
+          "      100 ms scan window plus sub-millisecond compute, with the queueing and\n"
+          "      thread-handoff terms explicitly absent until P12. Tuning it now would be fitting\n"
+          "      a constant to a number that has not been measured, which is the exact failure\n"
+          "      mode the enlargement re-derivation just corrected.\n"
+          "      Worse, it is no longer inert: P10 could zero it and keep 100%% containment with\n"
+          "      +0.0605 m to spare, and that headroom is now +0.0105 m.\n"
+          "      AND IT WOULD NOT BE ENOUGH ANYWAY - see the two floor rows in the ablation\n"
+          "      above. The two obvious levers on the command-delta gate have both been pulled,\n"
+          "      the gate is still missed by 1.73x, and the floor of the path is above the\n"
+          "      target. That, and not a third constant, is this pass's result.\n",
+          F(errors.radius_inflated_bias_m).c_str(), F(mean_deenlarged_radius_error).c_str(),
           F(errors.radius_inflated_bias_m).c_str());
+      Check(std::abs(mean_deenlarged_radius_error + 0.0125) < 5e-4,
+            "the attribution table's one non-configured row is the measured value, and it agrees "
+            "with the figure the previous pass reported for it",
+            F(mean_deenlarged_radius_error) + " m vs -0.0125 m");
     }
   }
 
@@ -734,10 +901,15 @@ int main(int argc, char** argv) {
   // red if a later change moves them materially in either direction - including a change that
   // "fixes" the inflation and should therefore be accompanied by new baselines here.
   {
-    Check(deltas.command_rmse_mps < 0.25,
-          "BASELINE GUARD: command-delta RMSE has not regressed past 0.25 m/s",
-          F(deltas.command_rmse_mps) + " m/s (baseline 0.1890 after the residual fix, 0.3237 "
-                                       "before it)");
+    // The bound is tightened alongside each improvement rather than left at its original width,
+    // so it keeps meaning "this has not regressed" instead of drifting into "this is under a
+    // number nobody has looked at since P11". 0.20 m/s is the measured 0.1732 with the same
+    // relative slack the 0.25 bound had over 0.1890.
+    Check(deltas.command_rmse_mps < 0.20,
+          "BASELINE GUARD: command-delta RMSE has not regressed past 0.20 m/s",
+          F(deltas.command_rmse_mps) + " m/s (baseline 0.1732 after the enlargement was "
+                                       "re-derived, 0.1890 after the residual fix, 0.3237 "
+                                       "before either)");
     Check(estimated_feasibility >= oracle_feasibility,
           "section 12: QP feasibility >= oracle's - NOW MET after the residual fix, and gated",
           F(estimated_feasibility, 4) + " vs oracle " + F(oracle_feasibility, 4) +

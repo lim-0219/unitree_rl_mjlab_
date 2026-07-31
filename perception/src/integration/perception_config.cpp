@@ -745,11 +745,16 @@ void PerceptionConfig::Validate() const {
   // margin to every fitted radius before it ever reaches the tracker, and
   // `safety.radius_inflation_fixed_m` adds one after. The stochastic term
   // `radius_inflation_k_sigma * sigma_r` does NOT: a systematic bias is invisible to the
-  // filter's own covariance, and the P10 sweep measured containment falling to 93.9% - well
-  // under the 99.9% target - on a corpus where the enlargement is absent and only k_sigma is
-  // left to cover it.
+  // filter's own covariance, and the sweep measures containment falling to 97.76% - under the
+  // 99.9% target - on a corpus where the enlargement is absent and only k_sigma and the
+  // safety-side fixed term are left to cover it. (P10 recorded 93.91% for that measurement and
+  // it is quoted here as re-measured, not carried forward: the fit_residual_m correction shrank
+  // the sigmas that were propping it up - taking it to 90.38% - and raising
+  // radius_inflation_fixed_m from 0.05 m to 0.08 m then lifted it to today's 97.76%. Three
+  // different numbers for one sentence, which is why the sentence names the corpus and the
+  // config rather than a remembered percentage.)
   //
-  // The shipped configuration satisfies this with 0.25 + 0.05 = 0.30 m against a 0.20 m
+  // The shipped configuration satisfies this with 0.17 + 0.08 = 0.25 m against a 0.20 m
   // requirement. What the constraint exists to stop is somebody zeroing the ENLARGEMENT - a
   // detection-side knob whose safety consequence is entirely at the other end of the pipeline
   // - and silently losing containment. Turning it down is still allowed; turning it down
@@ -758,6 +763,23 @@ void PerceptionConfig::Validate() const {
   // 0.20 m is P9's 0.169 m worst case rounded up to the nearest 0.05 m, and it is validated by
   // the P10 sweep rather than asserted: at the shipped k_sigma the enlargement-free corpus
   // reaches 99.9% containment once the two terms sum to 0.20 m.
+  //
+  // THE FLOOR IS NOT THE BINDING REQUIREMENT ON THE SHIPPED CONFIG, and the difference is
+  // recorded here so nobody reads 0.20 m as "what the flat budget may be reduced to". This
+  // constraint is about the BIAS alone. Section G of the safety suite separately measures
+  // same-instant containment with `latency_inflation_s` zeroed, and that gate needs a flat
+  // total of 0.2395 m - its worst margin is exactly `total - 0.2395` m across the swept
+  // range. The shipped 0.25 m clears it by +0.0105 m; a config at this 0.20 m floor would
+  // miss it at 90.64%. The floor is deliberately left where its own derivation puts it rather
+  // than raised to 0.2395 m: this is a load-time check on one measured quantity, and folding
+  // a second, differently-derived requirement into the same constant would make neither
+  // number traceable to what produced it.
+  //
+  // The two terms are exactly interchangeable downstream - 0.17 + 0.08 and 0.20 + 0.05 were
+  // measured to produce identical containment, identical strict-form margin and an identical
+  // command-delta RMSE - which is what makes a constraint on the SUM the right shape. That
+  // interchangeability is a post-fit_residual_m-correction property: before it, the
+  // enlargement also inflated every sigma, so the two terms were not substitutable at all.
   constexpr double kMeasuredShortArcRadiusBiasM = 0.20;
   if (!(detection.radius_enlargement_m + safety.radius_inflation_fixed_m >=
         kMeasuredShortArcRadiusBiasM)) {

@@ -201,8 +201,8 @@ struct SeamOutcome {
   int frames_with_track = 0;
   // Measured on the DE-ENLARGED radius, `radius_fitted_m - radius_enlargement_m`, which is
   // upstream's `true_radius` and the quantity P8's finding 2 reports. Comparing the raw fitted
-  // radius against ground truth would report the constant 0.25 m enlargement as an error, which
-  // is why P8 does not and why this does not either.
+  // radius against ground truth would report the constant enlargement (0.17 m as shipped) as an
+  // error, which is why P8 does not and why this does not either.
   double worst_radius_under_estimate = 0.0;
 
   // The peak-to-peak swing of the RAW fitted radius across the crossing. This, not the bias, is

@@ -14,15 +14,21 @@
 // This adapter deliberately performs NO radius policy of its own. The architecture doc §17
 // still recommends "conservative enclosing over fitted", and following it here would be wrong:
 // P10 measured `radius_enclosing_m` smaller than `radius_fitted_m` on 20 of 20 corpus circles,
-// by 0.254-0.287 m, so the doc's recommendation is an UNDER-estimate for this detector - the
-// one unrecoverable error by the doc's own §17. `SafetyParams::use_enclosing_radius` is a
-// documented no-op with a test asserting it inert. P10's output is final on this question and
-// this module consumes it as given.
+// by 0.174-0.207 m at the shipped enlargement, so the doc's recommendation is an UNDER-estimate
+// for this detector - the one unrecoverable error by the doc's own §17. `SafetyParams::
+// use_enclosing_radius` is a documented no-op with a test asserting it inert. P10's output is
+// final on this question and this module consumes it as given.
 //
 // The consequence a reader should carry away: what reaches the QP for a 0.25 m arena cylinder
-// is about 0.94 m (P10: tracked radius ~0.50 m plus mean total inflation 0.444 m), BEFORE the
-// filter applies its own s=1.05 and r_rob. Whether a constraint set that wide is usable is not
-// this file's claim to make; it is measured by the paired evaluator.
+// is about 0.69 m (tracked radius ~0.42 m plus mean total inflation 0.272 m), BEFORE the filter
+// applies its own s=1.05 and r_rob. Whether a constraint set that wide is usable is not this
+// file's claim to make; it is measured by the paired evaluator.
+//
+// That number was 0.94 m as P10 left it. Two later corrections brought it down and both are
+// worth naming, because they were corrections to constants rather than to algorithms: the
+// fit_residual_m fix cut the k_sigma inflation terms from 0.2926 m to 0.0739 m, and re-deriving
+// `detection.radius_enlargement_m` from P8's measured short-arc bias (0.25 m -> 0.17 m, with
+// `safety.radius_inflation_fixed_m` taking 0.03 m of that back) removed a further 0.05 m.
 //
 // =========================================================================================
 // IDS ARE 1:1, AND WHAT THAT DOES AND DOES NOT GUARANTEE

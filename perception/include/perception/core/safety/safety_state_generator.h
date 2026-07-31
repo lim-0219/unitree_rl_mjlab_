@@ -16,29 +16,34 @@
 //   `fitted`     is `PerceptionObstacle::radius_true_m`, which is `track.r.value()`, which is
 //                the Kalman filter driven by `CircleObservation::radius_fitted_m` - and that
 //                observation is `0.5773502 * chord + detection.radius_enlargement_m`. The
-//                enlargement (0.25 m as shipped) is INSIDE it. `PerceptionObstacle::radius_true_m`
+//                enlargement (0.17 m as shipped) is INSIDE it. `PerceptionObstacle::radius_true_m`
 //                is therefore upstream's `radius`, NOT upstream's `true_radius`, despite the
 //                comment on the contract saying otherwise (see the correction in obstacles.h).
 //
 // THE MEASUREMENT THAT SETTLES OPEN QUESTION Q11. Over the whole P8 detection corpus (20 fitted
 // circles, 6 scenes, full and half arc), `radius_enclosing_m` is smaller than `radius_fitted_m`
-// in 20 cases out of 20, by 0.254 m to 0.287 m. It is never once the larger of the two. The
+// in 20 cases out of 20, by 0.174 m to 0.207 m. It is never once the larger of the two. The
 // reason is geometric and not incidental: the enclosing radius is measured from the SQRT(3)/3
 // CENTRE, which sits behind the visible arc by construction (P8 finding 1 measured that offset at
 // 0.09-0.19 m), and only the sensor-facing arc is ever hit - so the farthest contributing point
 // is barely more than the true radius away from a centre that is already pulled toward the
-// sensor, while the fitted radius carries a flat +0.25 m on top of a chord-derived estimate.
+// sensor, while the fitted radius carries a flat +0.17 m on top of a chord-derived estimate.
+//
+// (P10 measured this gap at 0.254-0.287 m when the enlargement was 0.25 m. Re-deriving the
+// enlargement to 0.17 m moves the gap by exactly -0.08 m and nothing else: the enclosing radius
+// is the farthest contributing point from `circle.center`, and neither that centre nor those
+// points depend on the enlargement, so the whole spread translates rather than reshaping.)
 //
 // Two consequences, both load-bearing:
 //   * `max(fitted, enclosing)` would be inert even if the enclosing radius were plumbed through
-//     the tracker - it selects `fitted` on 20 samples out of 20, with 0.254 m of margin at the
+//     the tracker - it selects `fitted` on 20 samples out of 20, with 0.174 m of margin at the
 //     narrowest. Adding a fourth filtered channel to TrackState2D and PerceptionObstacle to
 //     carry a term that provably never binds was rejected on that evidence. `SafetyParams::
 //     use_enclosing_radius` is retained because the config key is frozen, and is a documented
 //     no-op with a test that asserts both settings produce byte-identical output.
 //   * the architecture doc section 17's standing recommendation - "conservative enclosing over
 //     fitted" - is WRONG for this detector, and following it would under-estimate every radius
-//     by 0.25-0.29 m, which is the doc's own definition of the one unrecoverable error. It is
+//     by 0.17-0.21 m, which is the doc's own definition of the one unrecoverable error. It is
 //     recorded here rather than only in the phase report because the recommendation is still
 //     written down in the doc a future reader will consult.
 //
@@ -113,10 +118,16 @@
 //
 // It is a DEGENERATE-FIT GUARD, and it is NOT the answer to the short-arc bias. See the phase
 // report for the numbers; the short version is that the floor never binds on any measured
-// sample (the tracked radius carries the +0.25 m enlargement, so it is 0.36-0.55 m where the
-// floor is 0.20 m), while the short-arc bias is 0.161 m and is covered entirely by that same
-// enlargement. Keeping the floor costs nothing and catches a radius filter driven toward zero;
-// claiming it answers Q13 would be false.
+// sample (the tracked radius carries the +0.17 m enlargement, so it measures 0.2886-0.4913 m
+// where the floor is 0.20 m), while the short-arc bias is 0.161 m worst case and is covered
+// entirely by that same enlargement. Keeping the floor costs nothing and catches a radius filter
+// driven toward zero; claiming it answers Q13 would be false.
+//
+// The margin over the floor shrank when the enlargement was re-derived from 0.25 m to 0.17 m -
+// P10 recorded the range as 0.36-0.55 m - and it is now 0.0886 m at the narrowest. Still 0 of
+// 171 emissions, and the test prints the measured range and gates on it rather than trusting
+// this comment's copy, because the next reduction is the one that could turn the floor into an
+// active clamp.
 //
 // =========================================================================================
 // VELOCITY SPIKE CLAMPING (risk R10's mitigation, architecture doc section 17)
@@ -163,7 +174,7 @@ struct SafetyParams {
 
   // ---- INFLATION ------------------------------------------------------------------------
   double radius_inflation_k_sigma = 2.0;
-  double radius_inflation_fixed_m = 0.05;
+  double radius_inflation_fixed_m = 0.08;
   double latency_inflation_s = 0.15;
 
   // max(fitted, enclosing) rather than fitted alone. A DOCUMENTED NO-OP on the shipped

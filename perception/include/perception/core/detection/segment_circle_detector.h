@@ -120,7 +120,9 @@ struct SegmentCircleDetectorParams {
   double max_merge_separation_m = 0.20;
   double max_merge_spread_m = 0.20;
   double max_circle_radius_m = 0.60;
-  double radius_enlargement_m = 0.25;
+  // The only member here that is NOT upstream's default. Re-derived from P8's measured short-arc
+  // radius bias; see configs/perception.yaml, which is what actually sets it on the live path.
+  double radius_enlargement_m = 0.17;
   bool circles_from_visibles = true;
   bool use_split_and_merge = true;
 

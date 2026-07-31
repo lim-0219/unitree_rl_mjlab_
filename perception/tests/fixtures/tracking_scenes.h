@@ -123,13 +123,18 @@ struct Body {
   // the DE-ENLARGED radius - `radius_fitted_m - radius_enlargement_m`, upstream's `true_radius`
   // - to be biased small by 0.006-0.145 m as a function of visible arc. The raw
   // `radius_fitted_m` that the tracker actually associates on is that value plus the constant
-  // 0.25 m enlargement, so against ground truth it OVER-estimates; measuring it without
+  // 0.17 m enlargement, so against ground truth it OVER-estimates; measuring it without
   // de-enlarging first reports the enlargement as an error, which is exactly why P8 does not.
   //
   // None of that changes what the association gate sees. The enlargement is a constant, so it
   // cancels in the difference between two frames, and the frame-to-frame variation of
   // `radius_fitted_m` IS the variation of the bias. Applying the step to the emitted radius here
-  // is therefore the faithful model, and -0.145 m is P8's worst measured case.
+  // is therefore the faithful model, and -0.145 m is P8's worst measured MEAN (half-arc
+  // population); its worst single case is -0.1613 m.
+  //
+  // The enlargement's value is therefore irrelevant to this fixture, which is why re-deriving it
+  // from 0.25 m to 0.17 m left `perception_tracking_test`'s output byte-identical - checked, not
+  // assumed.
   double radius_bias_m = 0.0;
   int bias_from_frame = 0;
 

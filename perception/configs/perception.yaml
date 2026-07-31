@@ -342,12 +342,40 @@ perception:
     max_merge_spread_m: 0.20     # UPSTREAM.
     max_circle_radius_m: 0.60    # UPSTREAM.
 
-    # UPSTREAM, and deliberately NOT retuned. This arena's obstacles are 0.2-0.3 m
-    # cylinders (dpcbf_config.yaml radius_range), so 0.25 m of enlargement roughly doubles
-    # them - conservative rather than wrong. The right value depends on the short-arc
-    # radius bias of the sqrt(3)/3 circle rule, which the detection phase's experiment
-    # measures. Guessing it now would launder a guess as a default.
-    radius_enlargement_m: 0.25
+    # MEASURED. Was UPSTREAM's 0.25 m, which P1 kept deliberately "pending the P8 short-arc
+    # bias experiment (Q11)". P8 ran that experiment; this is the value re-derived from it.
+    #
+    # WHAT THIS TERM IS FOR. The sqrt(3)/3 circle rule under-estimates the radius on short
+    # arcs, and an under-estimated safety radius is the one unrecoverable error in the
+    # subsystem (section 17). This enlargement covers that systematic under-estimate at the
+    # stage where it is made, so `radius_fitted_m` never under-states the true radius before
+    # it reaches the tracker. That is the whole job; it is NOT a general safety pad, which is
+    # what `safety.radius_inflation_fixed_m` is.
+    #
+    # THE DERIVATION, from two measurements on two corpora:
+    #   * DETECTOR STAGE. P8 section I measures the de-enlarged radius
+    #     (`radius_fitted_m - radius_enlargement_m`, upstream's `true_radius`) against ground
+    #     truth over 18 matched cylinders, reported as two populations that are never pooled:
+    #     full-arc (n=12) mean bias -0.0061 m, worst under-estimate 0.0200 m; half-arc (n=6)
+    #     mean bias -0.1446 m, worst under-estimate 0.1613 m. The worst over both is
+    #     0.16127 m.
+    #   * THROUGH THE FILTER. P10 corpus C (P9's seven error streams at the un-enlarged radius
+    #     convention, 312 samples) measures the worst under-estimate that survives the Kalman
+    #     filter to the safety stage's INPUT at 0.1668 m - the filter adds 0.0055 m, 3.4%, on
+    #     top of the detector's own worst.
+    # 0.17 m is the smallest 0.01 m-granular value that covers both on its own. Headroom over
+    # the detector-stage worst is +0.0087 m (5.4%); over the filter-carried worst, +0.0032 m
+    # (1.9%). Shipping 0.16127 m instead would assert that an 18-cylinder corpus, 6 of them
+    # half-arc, located the population's worst case; 0.01 m is finer than that population's
+    # own spread (half-arc under-estimates run 0.1358-0.1613 m, a 0.0255 m spread).
+    #
+    # NOT DERIVED FROM THE DOWNSTREAM COMMAND-DELTA NUMBER, which the re-derivation pass
+    # measured to be insensitive to the split anyway: this term and
+    # `safety.radius_inflation_fixed_m` are now exactly interchangeable at the QP (0.17+0.08
+    # and 0.20+0.05 produce identical containment, identical strict-form margin and an
+    # identical 0.1732 m/s command-delta RMSE), so the SPLIT is an attribution decision and
+    # only the TOTAL is a performance one. See safety.radius_inflation_fixed_m for the total.
+    radius_enlargement_m: 0.17
 
     circles_from_visibles: true  # UPSTREAM.
     use_split_and_merge: true    # UPSTREAM.
@@ -501,11 +529,20 @@ perception:
     #
     # RE-SWEPT and RETAINED after the fit_residual_m correction, which cut what this coefficient
     # multiplies by 75% (the k_sigma inflation term went from 0.2926 m to 0.0739 m, and the mean
-    # total inflation from 0.4443 m to 0.2413 m). The sweep's shape is unchanged: corpora A and B
-    # still reach 100% containment from k = 0 upward, so the term is still not what carries
+    # SAFETY-SIDE inflation from 0.4443 m to 0.2413 m). The sweep's shape is unchanged: corpora A
+    # and B still reach 100% containment from k = 0 upward, so the term is still not what carries
     # containment, and 2.0 still costs little. It is NOT raised to compensate for the smaller
     # sigma - that would be re-introducing, on the safety side, exactly the constant the
     # detector-side fix removed.
+    #
+    # NOT re-swept when radius_enlargement_m was later re-derived (0.25 -> 0.17 m), because that
+    # change provably cannot reach this coefficient: the fit_residual_m correction made
+    # sigma_radius_m invariant under the enlargement, and the safety suite asserts the invariance
+    # directly (mean sigma_radius_m 0.0239 m at both 0.17 m and 0.00 m of enlargement). The same
+    # decoupling is visible from the other end - perception_tracking_test's entire output is
+    # byte-identical across that change, so nothing P9 calibrated moved either. The mean
+    # safety-side inflation reads 0.2719 m today rather than 0.2413 m, and every metre of that
+    # difference is radius_inflation_fixed_m absorbing part of the enlargement, not this term.
     radius_inflation_k_sigma: 2.0
 
     # The only term other than detection.radius_enlargement_m that covers a SYSTEMATIC radius
@@ -513,10 +550,41 @@ perception:
     # are held to a joint floor by a cross-field constraint - see perception_config.cpp - so
     # turning the enlargement down without raising this fails to load rather than silently
     # losing containment.
-    radius_inflation_fixed_m: 0.05
+    #
+    # RAISED 0.05 -> 0.08 when radius_enlargement_m was re-derived from P8's measurement
+    # (0.25 -> 0.17), and this term is what carries the remainder. The two are exactly
+    # interchangeable downstream - measured, not assumed: 0.17+0.08 and 0.20+0.05 produce
+    # identical containment, identical strict-form margin and an identical command-delta RMSE
+    # - so the enlargement is sized by the bias it exists to cover and this term is sized by
+    # what the FLAT TOTAL has to be. The total is 0.25 m, and it is set by section G's
+    # strict-form containment gate, not by the bias:
+    #   * The bias needs 0.1668 m (P10 corpus C, the worst under-estimate reaching the safety
+    #     stage). P10 rounded that to the 0.20 m cross-field floor.
+    #   * Section G re-measures containment with `latency_inflation_s` zeroed - the honest
+    #     same-instant comparison, since crediting a consumption latency that has not been
+    #     consumed lets one term's margin pay for another's shortfall. That gate needs a flat
+    #     total of 0.2395 m: the swept worst margin is exactly `total - 0.2395` m over
+    #     0.20-0.30 m of flat budget (measured 100.0000% at 0.24 m with +0.0005 m, 97.6608%
+    #     at 0.23 m with -0.0095 m).
+    # 0.25 m is 0.2395 m rounded up to the nearest 0.05 m, the same rounding rule P10 used to
+    # turn 0.169 m into its 0.20 m floor. Measured strict-form margin at 0.25 m: +0.0105 m.
+    # SO THE REACHABLE SAVING WAS 0.05 m, NOT THE 0.10 m THE PRIOR PASS PROJECTED - the flat
+    # budget cannot reach the 0.20 m cross-field floor without containment starting to depend
+    # on `latency_inflation_s`, which is still a JUDGEMENT value.
+    radius_inflation_fixed_m: 0.08
 
     # One scan period plus processing. This IS the doc's `latency * k_lat`: there is no
     # separate k_lat, the coefficient is folded in here.
+    #
+    # STILL A JUDGEMENT VALUE, and now the largest one left. P10 could report that containment
+    # held at 100% with this term zeroed, so nothing depended on the guess. That is no longer
+    # free: with the flat budget re-derived from 0.30 m to 0.25 m, section G's strict form
+    # clears by +0.0105 m, and it would go negative if the flat budget dropped a further
+    # 0.011 m. Nothing here is broken - the gate passes - but the headroom that made this
+    # constant inert has mostly been spent, and it cannot be re-derived from anything this
+    # repository currently measures, because no end-to-end latency observation exists yet.
+    # It is the next-largest term in the radius handed to the QP (0.1095 m of a 0.4282 m mean
+    # over-statement, 26%) and it is deliberately NOT tuned here.
     latency_inflation_s: 0.15
 
     # A DOCUMENTED NO-OP, kept because the schema is frozen. `radius_enclosing_m` is a
@@ -533,10 +601,17 @@ perception:
     # inflation.
     #
     # Q13, RESOLVED AND NOT THE WAY THE DOC GUESSED: this is a DEGENERATE-FIT GUARD, not the
-    # answer to the short-arc bias. P10 measured it binding on 0 of 171 emissions - the tracked
-    # radius carries the 0.25 m enlargement, so it runs 0.36-0.55 m where the floor is 0.20 m -
+    # answer to the short-arc bias. It binds on 0 of 171 emissions - the tracked radius carries
+    # the detector's enlargement, so it measures 0.2886-0.4913 m against this 0.20 m floor -
     # while the short-arc bias is covered entirely by that same enlargement. Kept because it
     # costs nothing and catches a radius filter driven toward zero.
+    #
+    # THE MARGIN SHRANK, AND IT IS NOW GATED. P10 recorded that range as 0.36-0.55 m at the old
+    # 0.25 m enlargement; re-deriving the enlargement to 0.17 m brought the smallest tracked
+    # radius to within 0.0886 m of this floor. Still not binding, but the safety suite now
+    # asserts the smallest measured radius is above the floor rather than only counting clamps,
+    # because a future reduction that made the floor active would change what radius_true_m means
+    # without changing a line of code.
     min_radius_m: 0.20
     max_radius_m: 1.00           # Must be >= detection.max_circle_radius_m.
 

@@ -74,7 +74,7 @@ SegmentCircleDetectorParams ShippedParams() {
   params.max_merge_separation_m = 0.20;
   params.max_merge_spread_m = 0.20;
   params.max_circle_radius_m = 0.60;
-  params.radius_enlargement_m = 0.25;
+  params.radius_enlargement_m = 0.17;
   params.circles_from_visibles = true;
   params.use_split_and_merge = true;
   params.discard_converted_segments = true;

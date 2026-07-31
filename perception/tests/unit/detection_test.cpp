@@ -95,7 +95,7 @@ SegmentCircleDetectorParams ShippedParams() {
   params.max_merge_separation_m = 0.20;
   params.max_merge_spread_m = 0.20;
   params.max_circle_radius_m = 0.60;
-  params.radius_enlargement_m = 0.25;
+  params.radius_enlargement_m = 0.17;
   params.circles_from_visibles = true;
   params.use_split_and_merge = true;
   params.discard_converted_segments = true;
@@ -637,15 +637,52 @@ void SectionF() {
 
   // Circle merging. Two cylinders close enough that their enlarged circles contain one another
   // must come out as one, and the merge must be counted.
+  //
+  // A FINDING FROM THE ENLARGEMENT RE-DERIVATION, RECORDED BECAUSE IT CHANGED THIS CHECK'S
+  // ANSWER. At upstream's 0.25 m enlargement this scene produced ZERO circles: the pair merges
+  // into one circle whose enlarged radius exceeded `max_circle_radius_m` (0.60 m), so the radius
+  // cap dropped it and `circles.size() <= 1` passed vacuously - two real obstacles reported as
+  // nothing at all. At the re-derived 0.17 m the same merged circle is 0.08 m smaller, clears the
+  // cap, and is emitted. The enlargement is added BEFORE the cap is applied
+  // (segment_circle_detector.cpp), so shrinking it widens what the detector will report, and this
+  // is the one place in the corpus where that crosses a threshold.
+  //
+  // The check therefore asserts the count from BOTH sides now. "At most one" was the original
+  // question and is still the merging property under test; "at least one" is what stops the test
+  // silently going green again if a future change pushes this scene back over the cap.
   {
     const std::vector<detection_scenes::Cylinder> pair = {{2.0, -0.12, 0.25}, {2.0, 0.12, 0.25}};
     const auto cast = detection_scenes::CastScene(pair, {}, 1.0, 22.0, 22);
     SegmentCircleDetector detector(params);
     detector.Detect(cast.scan, &result);
+    std::printf("      two overlapping 0.25 m cylinders at 2 m: %d circles from %d attempted"
+                " (%d rejected by the %.2f m radius cap at a %.2f m enlargement), %d merges\n",
+                static_cast<int>(result.circles.size()), result.stats.circles_attempted,
+                result.stats.circles_rejected_radius, params.max_circle_radius_m,
+                params.radius_enlargement_m, result.stats.circle_merges);
     Check(result.circles.size() <= 1,
           "two heavily overlapping cylinders do not produce two separate circles",
           std::to_string(result.circles.size()) + " circles, " +
               std::to_string(result.stats.circle_merges) + " merges");
+    Check(!result.circles.empty(),
+          "and they are not dropped ENTIRELY - the merged circle clears the radius cap at the "
+          "re-derived enlargement, where at upstream's 0.25 m it did not and this scene reported "
+          "no obstacle at all",
+          std::to_string(result.circles.size()) + " circles");
+    // THE MECHANISM, VERIFIED RATHER THAN ASSERTED. The claim above is that the 0.08 m the
+    // enlargement gave up is exactly what moved this circle from the rejected side of the cap to
+    // the accepted side. That is checkable without re-running the detector: re-add the difference
+    // and the radius must land at or above the cap.
+    if (!result.circles.empty()) {
+      const double radius = result.circles.front().radius_fitted_m;
+      const double at_upstream_enlargement = radius + (0.25 - params.radius_enlargement_m);
+      Check(radius < params.max_circle_radius_m &&
+                at_upstream_enlargement >= params.max_circle_radius_m,
+            "and the mechanism is the radius cap and nothing else: this circle sits below the cap "
+            "at the shipped enlargement and above it at upstream's 0.25 m",
+            std::to_string(radius) + " m < " + std::to_string(params.max_circle_radius_m) +
+                " m, but " + std::to_string(at_upstream_enlargement) + " m >= it");
+    }
     for (const CircleObservation& circle : result.circles) {
       CheckValid(circle, "the surviving circle is valid");
     }
@@ -1418,8 +1455,14 @@ void SectionK() {
                   Number(residual, 6).c_str(), Number(shipped.radius_enlargement_m, 3).c_str());
       // The bound is the enlargement itself, because that is precisely the property the defect
       // violated: pre-fix the SMALLEST residual any circle on the corpus could report was
-      // 0.2761 m, i.e. above the 0.2500 m enlargement, by construction. This circle now reports
-      // a quarter of it.
+      // 0.2761 m, i.e. above the 0.2500 m enlargement, by construction. This circle reports
+      // 0.0624 m, which is 0.37x the shipped 0.17 m enlargement.
+      //
+      // THAT RATIO IS NOT A FIXED PROPERTY and the bound deliberately does not encode one. The
+      // residual is invariant under the enlargement (property 1 above) while the enlargement is
+      // not invariant under re-derivation, so the ratio moved from 0.25x to 0.37x when the
+      // enlargement went 0.25 m -> 0.17 m without a single residual changing. What is being
+      // asserted is the sign of the inequality, which is the property the defect inverted.
       //
       // It is NOT near zero, and should not be: 0.062 m is the sqrt(3)/3 circumcircle's own
       // model mismatch on a full arc (it fits a 0.2383 m radius to a 0.25 m cylinder and offsets

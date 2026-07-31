@@ -837,6 +837,85 @@ int main(int argc, char** argv) {
             "the 0.20 m short-arc bias budget the config constraint enforces is sufficient, at "
             "the shipped k_sigma - a bias is covered by a fixed term, not by a variance",
             F(100.0 * fixed_up.ContainmentRate(), 4) + "%");
+
+      // AND THE SHIPPED BUDGET, RE-VERIFIED ON THIS CORPUS AFTER THE ENLARGEMENT WAS RE-DERIVED.
+      //
+      // Corpus C is structurally enlargement-free - it is P9's streams verbatim - so it does not
+      // change when `detection.radius_enlargement_m` changes, and running it unmodified would
+      // re-verify nothing. What DOES have to be re-verified is the shipped FLAT BUDGET, because
+      // the enlargement and the fixed term are two halves of one quantity: the enlargement adds a
+      // constant to the radius before the tracker and the fixed term adds one after, and since
+      // the fit_residual_m correction decoupled the sigmas from the enlargement, nothing else
+      // distinguishes them. So the faithful statement of "the shipped config on corpus C" is
+      // corpus C with the safety-side term carrying the whole flat total.
+      //
+      // This is also the check that keeps the constraint honest in the other direction: it is the
+      // enlargement-free config the cross-field constraint would permit, run at the budget the
+      // shipped config actually provides.
+      const double flat_budget =
+          detector_params.radius_enlargement_m + shipped.radius_inflation_fixed_m;
+      SafetyParams shipped_budget = shipped;
+      shipped_budget.radius_inflation_fixed_m = flat_budget;
+      const ContainmentSummary at_budget = Summarise(run_raw(shipped_budget));
+      std::printf("      corpus C at the SHIPPED flat budget (%.2f enlargement + %.2f fixed = "
+                  "%.2f m, all of it on the safety side here): containment %.4f%%, worst margin "
+                  "%.4f m, worst radius under-estimation rate %.4f%%\n",
+                  detector_params.radius_enlargement_m, shipped.radius_inflation_fixed_m,
+                  flat_budget, 100.0 * at_budget.ContainmentRate(), at_budget.worst_margin,
+                  100.0 * at_budget.UnderEstimationRate());
+      Check(at_budget.ContainmentRate() >= 0.999,
+            "corpus C still meets 99.9% containment at the re-derived flat budget - the corpus "
+            "that established the 0.20 m floor is real keeps passing at the smaller number",
+            F(100.0 * at_budget.ContainmentRate(), 4) + "% at " + F(flat_budget, 2) + " m");
+      Check(at_budget.UnderEstimationRate() <= 0.001,
+            "and its radius under-estimation rate stays inside 0.1% at that budget",
+            F(100.0 * at_budget.UnderEstimationRate(), 4) + "%");
+
+      // THE INTERCHANGEABILITY THE ABOVE RESTS ON, MEASURED - AND IT HOLDS ONLY ONCE THE FLOOR IS
+      // OUT OF THE WAY, WHICH IS ITSELF THE FINDING.
+      //
+      // The claim under test: corpus C carrying the whole flat budget on the safety side must
+      // agree with corpus B - the SAME streams rebased by the enlargement - carrying the shipped
+      // split, because the two differ only in which side of the tracker one constant is added on.
+      // Since the fit_residual_m correction, no sigma, gate or threshold depends on the
+      // enlargement, so the two SHOULD be identical.
+      //
+      // With the shipped parameters they are NOT, and the reason is `min_radius_m`. Corpus C's
+      // tracked radius is the raw truth (0.20-0.30 m) with noise, so the 0.20 m floor clamps some
+      // samples upward; corpus B's is that plus the enlargement and never reaches the floor. The
+      // floor is a max(), the one nonlinearity in the expression, and removing the enlargement is
+      // exactly what walks the corpus into it.
+      //
+      // So the property is asserted where it is actually a property - with the floor disabled -
+      // and the shipped-parameter gap is reported as what it is: corpus C at the full safety-side
+      // budget is CONSERVATIVE relative to the real split, not equivalent to it. That direction
+      // matters. It means the re-verification above is not flattering the shipped config.
+      const ContainmentSummary split_across = Summarise(run_rebased(shipped));
+      std::printf("      the same budget split across the two terms (corpus B, %.2f enlargement + "
+                  "%.2f fixed): containment %.4f%%, worst margin %.4f m\n",
+                  detector_params.radius_enlargement_m, shipped.radius_inflation_fixed_m,
+                  100.0 * split_across.ContainmentRate(), split_across.worst_margin);
+
+      SafetyParams unfloored_budget = shipped_budget;
+      unfloored_budget.min_radius_m = 1e-6;
+      SafetyParams unfloored_split = shipped;
+      unfloored_split.min_radius_m = 1e-6;
+      const ContainmentSummary budget_nofloor = Summarise(run_raw(unfloored_budget));
+      const ContainmentSummary split_nofloor = Summarise(run_rebased(unfloored_split));
+      std::printf("      with min_radius_m disabled, the two coincide: worst margin %.9f m "
+                  "(budget on one side) vs %.9f m (split across both)\n",
+                  budget_nofloor.worst_margin, split_nofloor.worst_margin);
+      Check(std::abs(split_nofloor.worst_margin - budget_nofloor.worst_margin) < 1e-9,
+            "the enlargement and the fixed term are interchangeable to 1e-9 m once min_radius_m "
+            "is out of the way - which is what makes the SPLIT an attribution decision and only "
+            "the TOTAL a safety one",
+            F(split_nofloor.worst_margin, 9) + " m vs " + F(budget_nofloor.worst_margin, 9) + " m");
+      Check(at_budget.worst_margin >= split_across.worst_margin,
+            "and with the floor active, corpus C at the full safety-side budget is CONSERVATIVE "
+            "relative to the shipped split rather than equivalent - the floor binds on the "
+            "enlargement-free corpus and not on the shipped one, so the re-verification above is "
+            "not flattering the config it checks",
+            F(at_budget.worst_margin) + " m vs " + F(split_across.worst_margin) + " m");
     }
   }
 
@@ -926,6 +1005,16 @@ int main(int argc, char** argv) {
     // in a SAME-INSTANT containment measurement lets one term's margin pay for another term's
     // shortfall. Re-measured with `latency_inflation_s` zeroed - the elapsed half of the horizon
     // stays, because that drift has genuinely already happened.
+    //
+    // THIS IS THE GATE THAT SIZES THE FLAT BUDGET, and finding that out is what stopped the
+    // enlargement re-derivation at a 0.25 m flat total instead of the 0.20 m cross-field floor.
+    // P10 could report this at 100% with +0.0605 m of margin and treat `latency_inflation_s` as
+    // inert; that margin was being supplied by an enlargement nobody had derived from anything.
+    // Sweeping the flat budget over 0.20-0.30 m gives a worst margin of exactly `total - 0.2395`
+    // m - the two flat terms enter the safety radius additively and nothing else in the
+    // expression is nonlinear over this range - so the gate's requirement is a flat total of
+    // 0.2395 m. The shipped 0.25 m clears it by +0.0105 m. A config at the 0.20 m floor would
+    // report 90.64% here, which is why the floor is not a target.
     {
       SafetyParams strict = shipped;
       strict.latency_inflation_s = 0.0;
@@ -934,13 +1023,34 @@ int main(int argc, char** argv) {
         RunMovingScene(scene, detector_params, tracking_params, strict, &strict_samples);
       }
       const ContainmentSummary summary = Summarise(strict_samples);
+      const double flat_budget =
+          detector_params.radius_enlargement_m + shipped.radius_inflation_fixed_m;
       std::printf("      same-instant containment with NO latency credit: %.4f%%, worst margin "
-                  "%.4f m\n",
-                  100.0 * summary.ContainmentRate(), summary.worst_margin);
+                  "%.4f m (flat budget %.2f m; this gate needs 0.2395 m)\n",
+                  100.0 * summary.ContainmentRate(), summary.worst_margin, flat_budget);
       Check(summary.ContainmentRate() >= 0.999,
             "containment holds without crediting the latency term - the uncertainty terms carry "
             "it on their own",
             F(100.0 * summary.ContainmentRate(), 4) + "%");
+
+      // The requirement itself, asserted so it stays a measurement rather than a comment. The
+      // worst margin is `flat_budget - 0.2395` m; check the relation, not a remembered number,
+      // and check it at a budget OTHER than the shipped one so the two are not the same claim.
+      SafetyParams probe = strict;
+      probe.radius_inflation_fixed_m = shipped.radius_inflation_fixed_m + 0.02;
+      std::vector<ContainmentSample> probe_samples;
+      for (const auto& scene : safety_scenes::MovingScenes()) {
+        RunMovingScene(scene, detector_params, tracking_params, probe, &probe_samples);
+      }
+      const ContainmentSummary probed = Summarise(probe_samples);
+      Check(std::abs((probed.worst_margin - summary.worst_margin) - 0.02) < 1e-9,
+            "the strict-form margin moves 1:1 with the flat budget, which is what makes 'this "
+            "gate needs 0.2395 m' a measurement of a line rather than of one point",
+            F(probed.worst_margin - summary.worst_margin, 9) + " m per 0.02 m added");
+      Check(summary.worst_margin > 0.0,
+            "and the shipped flat budget clears the gate with margin left, rather than landing "
+            "on it - a budget at the 0.20 m cross-field floor would not",
+            F(summary.worst_margin) + " m at a " + F(flat_budget, 2) + " m flat budget");
     }
 
     // TERM ATTRIBUTION - what the inflation is actually made of. This is the number P11 and P15
@@ -1030,10 +1140,19 @@ int main(int argc, char** argv) {
     // the radius error it would have to cover?
     double worst_sigma_term = 0.0;
     double worst_radius_under = 0.0;
+    // The tracked radius's own range, MEASURED rather than quoted. The Q13 finding is "the floor
+    // never binds because the tracked radius runs far above it", and that sentence used to carry
+    // a literal 0.36-0.55 m copied from P10's run. Re-deriving radius_enlargement_m moved the
+    // range - the enlargement is inside radius_true_m - so the claim reports what it measured.
+    double smallest_tracked_radius = std::numeric_limits<double>::max();
+    double largest_tracked_radius = 0.0;
     for (const ContainmentSample& sample : samples) {
       worst_radius_under =
           std::max(worst_radius_under, sample.truth_radius - sample.radius_true);
+      smallest_tracked_radius = std::min(smallest_tracked_radius, sample.radius_true);
+      largest_tracked_radius = std::max(largest_tracked_radius, sample.radius_true);
     }
+    if (samples.empty()) smallest_tracked_radius = 0.0;
     // The competing candidate has to be measured on BOTH corpora, because the answer differs
     // between them and that difference is the finding. `k_sigma * sigma_r` in isolation:
     // regenerate with every other term off, then read it back as
@@ -1073,10 +1192,25 @@ int main(int argc, char** argv) {
                 "same errors with the enlargement absent\n",
                 worst_sigma_term, worst_sigma_term_no_enlargement);
 
+    std::printf("      tracked radius over the corpus: %.4f-%.4f m against a %.2f m floor "
+                "(the detector's %.2f m enlargement is inside it)\n",
+                smallest_tracked_radius, largest_tracked_radius, shipped.min_radius_m,
+                detector_params.radius_enlargement_m);
     Check(floored == 0,
-          "Q13: the 0.20 m floor NEVER binds on the shipped pipeline - the tracked radius carries "
-          "the detector's 0.25 m enlargement, so it is 0.36-0.55 m where the floor is 0.20 m",
-          std::to_string(floored) + " of " + std::to_string(emissions));
+          "Q13: the min_radius_m floor NEVER binds on the shipped pipeline - the tracked radius "
+          "carries the detector's enlargement, so it runs well above the floor",
+          std::to_string(floored) + " of " + std::to_string(emissions) + ", tracked radius " +
+              F(smallest_tracked_radius) + "-" + F(largest_tracked_radius) + " m vs floor " +
+              F(shipped.min_radius_m) + " m");
+    // AND THE MARGIN, WHICH SHRANK. Re-deriving the enlargement from 0.25 m to 0.17 m moved the
+    // whole tracked-radius range down by that difference, so the gap between the smallest tracked
+    // radius and the floor is narrower than the one P10 recorded. Still not binding, and gated
+    // here so that the next reduction cannot quietly turn the floor into an active clamp - which
+    // would change what `radius_true_m` means without changing any line of code.
+    Check(smallest_tracked_radius > shipped.min_radius_m,
+          "Q13: and the smallest tracked radius is still clear of the floor, not merely unclamped "
+          "on average",
+          F(smallest_tracked_radius) + " m > " + F(shipped.min_radius_m) + " m");
     Check(worst_radius_under <= 0.0,
           "Q13: and no emitted state under-estimates the true radius at all, so there is nothing "
           "for a floor to rescue",
@@ -1085,11 +1219,12 @@ int main(int argc, char** argv) {
     // THE COMPETING CANDIDATE, AND WHY IT IS NOT AN ANSWER EITHER. The claim to test is that
     // `k_sigma * sigma_r` already scales up on short arcs via the detector's 1/(1 - cos alpha)
     // dilution, so no floor is needed. On the shipped pipeline the term IS large - but for a
-    // reason that has nothing to do with the bias: the detector computes fit_residual_m against
-    // the ENLARGED radius (segment_circle_detector.cpp), so the residual, and every sigma
-    // derived from it, is dominated by the same 0.25 m constant. Remove the enlargement and the
-    // term collapses by an order of magnitude while the bias it was supposed to cover does not
-    // move at all - which is the definition of a term that is not tracking what it appears to.
+    // reason that has nothing to do with the bias: the detector computed fit_residual_m against
+    // the ENLARGED radius, so the residual, and every sigma derived from it, was dominated by
+    // that same constant. Remove the enlargement and the term collapsed while the bias it was
+    // supposed to cover did not move at all - which is the definition of a term that is not
+    // tracking what it appears to. That defect is fixed (the residual is measured against
+    // `radius_unenlarged` now), and the block below asserts the fix rather than the defect.
     Check(worst_sigma_term_no_enlargement < 0.161,
           "Q13: with the enlargement absent, k_sigma*sigma_r collapses far below P8's worst "
           "short-arc radius bias (0.161 m) - a posterior variance cannot cover a systematic bias",
